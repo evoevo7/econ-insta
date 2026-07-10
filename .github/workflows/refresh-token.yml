@@ -1,0 +1,42 @@
+# 장기 토큰은 60일이면 만료된다. 매달 1일에 갱신해 시크릿을 덮어쓴다.
+#
+# 사전 준비:
+#   gh secret set IG_ACCESS_TOKEN   # tokens.json의 access_token
+#   gh secret set GH_PAT            # repo 시크릿 쓰기 권한이 있는 PAT
+#
+# GITHUB_TOKEN으로는 시크릿을 쓸 수 없어 별도 PAT가 필요하다.
+
+name: Refresh Instagram token
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # 매달 1일 00:00 UTC
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install -r requirements.txt
+
+      - name: Refresh long-lived token
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python -m econ_insta.ig_auth refresh
+
+      - name: Store refreshed token back into secrets
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEW_TOKEN=$(python -c "import json; print(json.load(open('tokens.json'))['access_token'])")
+          gh secret set IG_ACCESS_TOKEN --body "$NEW_TOKEN"
+
+      - name: Never commit the token
+        run: rm -f tokens.json
