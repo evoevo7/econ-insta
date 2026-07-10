@@ -223,6 +223,47 @@ def render_card(card: Card, index: int, total: int, fonts: FontSet) -> Image.Ima
     return image
 
 
+@dataclass(frozen=True)
+class _IndicatorLayout:
+    row_height: int
+    name_size: int
+    price_size: int
+    change_size: int
+    note_size: int
+    height: int
+    """지표 행 + 코멘트 전체 높이."""
+
+
+# 지표 개수는 수집 결과에 따라 달라진다(3건일 때도, 8건일 때도 있다).
+# 기본 축척으로 넘치면 한 단계씩 줄여 카드 안에 반드시 들어오게 한다.
+_SCALES = (1.0, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52)
+
+NOTE_GAP = 60
+
+
+def _indicator_layout(quotes, note: str, fonts: FontSet, inner: int, available: int) -> _IndicatorLayout:
+    """지표 카드가 세로로 넘치지 않는 가장 큰 축척을 고른다."""
+    layout = None
+    for scale in _SCALES:
+        layout = _IndicatorLayout(
+            row_height=int(118 * scale),
+            name_size=max(int(40 * scale), 20),
+            price_size=max(int(40 * scale), 20),
+            change_size=max(int(34 * scale), 18),
+            note_size=max(int(36 * scale), 18),
+            height=0,
+        )
+        height = len(quotes) * layout.row_height
+        if note:
+            height += int(NOTE_GAP * scale) + _block_height(note, fonts.at(layout.note_size), inner)
+
+        layout = _IndicatorLayout(**{**layout.__dict__, "height": height})
+        if height <= available:
+            break
+
+    return layout
+
+
 def _change_color(change_pct: float) -> tuple[int, int, int]:
     if change_pct > 0:
         return UP
@@ -237,40 +278,31 @@ def render_indicators(quotes, note: str, fonts: FontSet) -> Image.Image:
 
     draw.text((MARGIN, MARGIN), "오늘의 지표", font=fonts.at(58, bold=True), fill=ACCENT)
 
-    name_font = fonts.at(40)
-    price_font = fonts.at(40, bold=True)
-    change_font = fonts.at(34, bold=True)
-    note_font = fonts.at(36)
-
-    row_height = 118
-    block = len(quotes) * row_height
-    if note:
-        block += 60 + _block_height(note, note_font, inner)
-
     field_top, field_bottom = MARGIN + 160, HEIGHT - MARGIN
-    top = max(field_top, field_top + (field_bottom - field_top - block) // 2)
+    layout = _indicator_layout(quotes, note, fonts, inner, field_bottom - field_top)
+
+    name_font = fonts.at(layout.name_size)
+    price_font = fonts.at(layout.price_size, bold=True)
+    change_font = fonts.at(layout.change_size, bold=True)
+    note_font = fonts.at(layout.note_size)
+
+    top = max(field_top, field_top + (field_bottom - field_top - layout.height) // 2)
 
     for quote in quotes:
         draw.text((MARGIN, top), quote.name, font=name_font, fill=FG)
+        draw.text((WIDTH - MARGIN, top), quote.price_text, font=price_font, fill=FG, anchor="ra")
         draw.text(
-            (WIDTH - MARGIN, top),
-            quote.price_text,
-            font=price_font,
-            fill=FG,
-            anchor="ra",
-        )
-        draw.text(
-            (WIDTH - MARGIN, top + 52),
+            (WIDTH - MARGIN, top + int(layout.row_height * 0.44)),
             quote.change_text,
             font=change_font,
             fill=_change_color(quote.change_pct),
             anchor="ra",
         )
-        top += row_height
+        top += layout.row_height
         _rule(draw, top - 22)
 
     if note:
-        _draw_block(draw, note, note_font, top=top + 60, fill=(206, 212, 224), max_width=inner)
+        _draw_block(draw, note, note_font, top=top + NOTE_GAP, fill=(206, 212, 224), max_width=inner)
 
     return image
 

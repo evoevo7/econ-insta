@@ -18,6 +18,7 @@ from PIL import Image, ImageFont
 from econ_insta.collector import Quote
 from econ_insta.renderer import (
     DOWN,
+    MARGIN,
     FLAT,
     HEIGHT,
     UP,
@@ -25,6 +26,7 @@ from econ_insta.renderer import (
     FontSet,
     RenderError,
     _change_color,
+    _indicator_layout,
     _resolve,
     render,
     render_card,
@@ -122,6 +124,47 @@ class CardImageTest(unittest.TestCase):
 
     def test_indicator_card_renders_without_note(self):
         self.assertEqual(render_indicators(self.briefing.quotes, "", self.fonts).size, (WIDTH, HEIGHT))
+
+
+class IndicatorLayoutTest(unittest.TestCase):
+    """지표 개수는 수집 결과에 따라 3~8건으로 달라진다. 어떤 경우에도 카드를 넘치면 안 된다."""
+
+    def setUp(self) -> None:
+        self.fonts = StubFonts()
+        self.inner = WIDTH - MARGIN * 2
+        self.available = HEIGHT - MARGIN - (MARGIN + 160)
+
+    def quotes(self, count: int) -> list[Quote]:
+        return [
+            Quote(symbol=f"S{i}", name=f"지표{i}", price=1000.0 + i, change_pct=(-1) ** i * 0.5)
+            for i in range(count)
+        ]
+
+    def test_layout_fits_for_every_realistic_quote_count(self):
+        note = "국내 증시가 큰 폭으로 오르며 국제유가와 금값은 소폭 하락했다"
+        for count in range(1, 9):
+            with self.subTest(quotes=count):
+                layout = _indicator_layout(self.quotes(count), note, self.fonts, self.inner, self.available)
+                self.assertLessEqual(layout.height, self.available)
+
+    def test_eight_quotes_shrink_below_full_scale(self):
+        # 8건은 기본 축척(row 118)으로는 넘친다. 축척이 줄어야 한다.
+        layout = _indicator_layout(self.quotes(8), "코멘트", self.fonts, self.inner, self.available)
+        self.assertLess(layout.row_height, 118)
+
+    def test_three_quotes_keep_full_scale(self):
+        layout = _indicator_layout(self.quotes(3), "코멘트", self.fonts, self.inner, self.available)
+        self.assertEqual(layout.row_height, 118)
+
+    def test_long_note_also_shrinks_layout(self):
+        short = _indicator_layout(self.quotes(6), "짧다", self.fonts, self.inner, self.available)
+        long = _indicator_layout(self.quotes(6), "길다 " * 40, self.fonts, self.inner, self.available)
+        self.assertLessEqual(long.row_height, short.row_height)
+        self.assertLessEqual(long.height, self.available)
+
+    def test_eight_quote_card_still_renders_at_full_size(self):
+        image = render_indicators(self.quotes(8), "코멘트가 여기 들어간다", self.fonts)
+        self.assertEqual(image.size, (WIDTH, HEIGHT))
 
 
 class RenderTest(unittest.TestCase):
