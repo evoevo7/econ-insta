@@ -29,11 +29,39 @@ USER_AGENT = "Mozilla/5.0 (compatible; econ-insta/0.1)"
 
 KST = timezone(timedelta(hours=9))
 
-FEEDS: dict[str, str] = {
-    "연합뉴스": "https://www.yna.co.kr/rss/economy.xml",
-    "한국경제": "https://www.hankyung.com/feed/economy",
-    "매일경제": "https://www.mk.co.kr/rss/30100041/",
+@dataclass(frozen=True)
+class FeedSpec:
+    url: str
+    language: str = "ko"
+    max_age_hours: float = 24
+    """The Economist는 주간지라 24시간 창으로는 0건인 날이 생긴다."""
+    quota: int = 5
+    """한 매체가 브리핑을 독식하지 않도록 매체별 상한을 둔다."""
+
+
+# 주의: WSJ의 옛 주소(feeds.a.dj.com)는 HTTP 200을 주지만 2025-01에 갱신이 멈춘 죽은 피드다.
+# 살아 있는 것은 feeds.content.dowjones.io 쪽이다.
+FEEDS: dict[str, FeedSpec] = {
+    "한국경제": FeedSpec("https://www.hankyung.com/feed/economy"),
+    "매일경제": FeedSpec("https://www.mk.co.kr/rss/30100041/"),
+    "WSJ": FeedSpec(
+        "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+        language="en",
+        quota=3,
+    ),
+    "The Economist": FeedSpec(
+        "https://www.economist.com/finance-and-economics/rss.xml",
+        language="en",
+        max_age_hours=72,
+        quota=2,
+    ),
 }
+
+# 브리핑에 쓸 수 없는 정형 기사의 말머리. [특징주]·[외환]은 시장 소재이므로 남긴다.
+BOILERPLATE_TAGS = frozenset(
+    {"인사", "동정", "프로필", "부고", "부음", "게시판", "신간", "알림", "사고", "정정", "고침"}
+)
+BOILERPLATE_PREFIXES = ("외국환시세",)
 
 TICKERS: dict[str, str] = {
     "^KS11": "코스피",
@@ -68,6 +96,8 @@ class Article:
     published: datetime
     """항상 tz-aware(KST)."""
     summary: str = ""
+    language: str = "ko"
+    """en이면 요약 단계에서 한국어로 옮겨야 한다."""
 
     @property
     def age(self) -> timedelta:
@@ -139,6 +169,29 @@ def _normalize_title(title: str) -> str:
     return text.lower()
 
 
+def is_boilerplate(title: str) -> bool:
+    """브리핑에 쓸 수 없는 정형 기사인가. [인사]·[동정]·외국환시세 표 같은 것들."""
+    text = title.strip()
+    match = re.match(r"^\s*\[([^\]]*)\]", text)
+    if match and match.group(1).strip() in BOILERPLATE_TAGS:
+        return True
+    return text.startswith(BOILERPLATE_PREFIXES)
+
+
+def apply_quota(articles: list[Article], feeds: dict[str, FeedSpec]) -> list[Article]:
+    """매체별 상한을 적용한다. 입력이 최신순이면 각 매체의 최신 기사가 남는다."""
+    counts: dict[str, int] = {}
+    kept: list[Article] = []
+    for article in articles:
+        spec = feeds.get(article.source)
+        limit = spec.quota if spec else 0
+        if counts.get(article.source, 0) >= limit:
+            continue
+        counts[article.source] = counts.get(article.source, 0) + 1
+        kept.append(article)
+    return kept
+
+
 def _text(item: ET.Element, tag: str) -> str:
     """자식 태그의 전체 텍스트. findtext()는 자식 엘리먼트가 끼면 앞부분만 돌려준다.
 
@@ -149,8 +202,8 @@ def _text(item: ET.Element, tag: str) -> str:
     return "" if element is None else "".join(element.itertext())
 
 
-def parse_feed(source: str, xml_bytes: bytes) -> list[Article]:
-    """RSS 바이트를 Article 목록으로. 개별 item 오류는 건너뛴다."""
+def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Article]:
+    """RSS 바이트를 Article 목록으로. 개별 item 오류와 정형 기사는 건너뛴다."""
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
@@ -160,7 +213,7 @@ def parse_feed(source: str, xml_bytes: bytes) -> list[Article]:
     for item in root.findall(".//item"):
         title = clean_text(_text(item, "title"))
         link = _text(item, "link").strip()
-        if not title or not link:
+        if not title or not link or is_boilerplate(title):
             continue
         try:
             published = parse_pubdate(_text(item, "pubDate"))
@@ -173,19 +226,20 @@ def parse_feed(source: str, xml_bytes: bytes) -> list[Article]:
                 link=link,
                 published=published,
                 summary=clean_text(_text(item, "description"))[:300],
+                language=language,
             )
         )
     return articles
 
 
-def fetch_feed(source: str, url: str, session: requests.Session | None = None) -> list[Article]:
+def fetch_feed(source: str, spec: FeedSpec, session: requests.Session | None = None) -> list[Article]:
     caller = session or requests
     try:
-        response = caller.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT)
+        response = caller.get(spec.url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT)
         response.raise_for_status()
     except requests.RequestException as exc:
         raise CollectError(f"{source}: 요청 실패 ({exc})") from exc
-    return parse_feed(source, response.content)
+    return parse_feed(source, response.content, language=spec.language)
 
 
 def dedupe(articles: list[Article]) -> list[Article]:
@@ -202,27 +256,33 @@ def dedupe(articles: list[Article]) -> list[Article]:
 
 
 def collect_articles(
-    max_age_hours: float = 24,
     limit: int = 20,
-    feeds: dict[str, str] | None = None,
+    feeds: dict[str, FeedSpec] | None = None,
     errors: list[str] | None = None,
 ) -> list[Article]:
-    """모든 피드에서 최근 기사를 모아 최신순으로 돌려준다."""
+    """모든 피드에서 최근 기사를 모아 최신순으로 돌려준다.
+
+    수집 기간은 매체별로 다르다(주간지는 창을 넓게 잡는다). 중복 제거 후
+    매체별 쿼터를 적용하므로 물량이 많은 매체가 브리핑을 독식하지 않는다.
+    """
+    specs = feeds or FEEDS
     session = requests.Session()
-    cutoff = now_kst() - timedelta(hours=max_age_hours)
+    now = now_kst()
 
     gathered: list[Article] = []
-    for source, url in (feeds or FEEDS).items():
+    for source, spec in specs.items():
         try:
-            gathered.extend(fetch_feed(source, url, session=session))
+            fetched = fetch_feed(source, spec, session=session)
         except CollectError as exc:
             if errors is None:
                 raise
             errors.append(str(exc))
+            continue
+        cutoff = now - timedelta(hours=spec.max_age_hours)
+        gathered.extend(a for a in fetched if a.published >= cutoff)
 
-    fresh = [a for a in gathered if a.published >= cutoff]
-    fresh.sort(key=lambda a: a.published, reverse=True)
-    return dedupe(fresh)[:limit]
+    gathered.sort(key=lambda a: a.published, reverse=True)
+    return apply_quota(dedupe(gathered), specs)[:limit]
 
 
 def collect_quotes(
@@ -264,10 +324,10 @@ def collect_quotes(
     return quotes
 
 
-def collect(max_age_hours: float = 24, limit: int = 20) -> DailyBrief:
+def collect(limit: int = 20) -> DailyBrief:
     """기사와 지표를 함께 모은다. 한쪽이 실패해도 brief.errors에 남기고 진행한다."""
     errors: list[str] = []
-    articles = collect_articles(max_age_hours=max_age_hours, limit=limit, errors=errors)
+    articles = collect_articles(limit=limit, errors=errors)
 
     try:
         quotes = collect_quotes(errors=errors)
@@ -290,7 +350,12 @@ def main() -> int:
     print(f"\n기사 {len(brief.articles)}건 (최신순)")
     for article in brief.articles:
         hours = article.age.total_seconds() / 3600
-        print(f"  [{article.source}] {hours:4.1f}h  {article.title[:52]}")
+        print(f"  {article.source:<14} {hours:5.1f}h  {article.title[:56]}")
+
+    by_source: dict[str, int] = {}
+    for article in brief.articles:
+        by_source[article.source] = by_source.get(article.source, 0) + 1
+    print("\n매체별: " + ", ".join(f"{s} {n}건" for s, n in by_source.items()))
 
     if brief.errors:
         print(f"\n경고 {len(brief.errors)}건")

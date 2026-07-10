@@ -9,10 +9,13 @@ from econ_insta.collector import (
     KST,
     Article,
     CollectError,
+    FeedSpec,
     Quote,
+    apply_quota,
     clean_text,
     collect_articles,
     dedupe,
+    is_boilerplate,
     parse_feed,
     parse_pubdate,
 )
@@ -129,13 +132,35 @@ class ParseFeedTest(unittest.TestCase):
             parse_feed("연합뉴스", b"<rss><channel>")
 
 
-def make_article(title, source="연합뉴스", minutes_ago=0):
+def make_article(title, source="매일경제", minutes_ago=0):
     return Article(
         source=source,
         title=title,
         link=f"https://example.com/{abs(hash(title))}",
         published=datetime(2026, 7, 10, 15, 0, tzinfo=KST) - timedelta(minutes=minutes_ago),
     )
+
+
+class IsBoilerplateTest(unittest.TestCase):
+    def test_rejects_personnel_tags(self):
+        for title in ("[인사] 한국수출입은행", "[동정] 황종우 해수부 장관", "[프로필] 임기근 국무조정실장"):
+            self.assertTrue(is_boilerplate(title), title)
+
+    def test_rejects_fx_rate_table(self):
+        self.assertTrue(is_boilerplate("외국환시세(7월10일·15:30 기준가)"))
+
+    def test_keeps_stock_movers(self):
+        """[특징주]는 시장 소재이므로 남긴다."""
+        self.assertFalse(is_boilerplate("[특징주] SK하이닉스 약세마감"))
+
+    def test_keeps_fx_news(self):
+        self.assertFalse(is_boilerplate("[외환] 원/달러 환율 4.7원 내린 1,501.4원"))
+
+    def test_keeps_plain_title(self):
+        self.assertFalse(is_boilerplate("코스피 2.5% 상승해 7,400대"))
+
+    def test_keeps_english_title(self):
+        self.assertFalse(is_boilerplate("China may struggle to fund Xi Jinping's tech dreams"))
 
 
 class DedupeTest(unittest.TestCase):
@@ -149,12 +174,38 @@ class DedupeTest(unittest.TestCase):
         self.assertEqual(len(dedupe(articles)), 1)
 
     def test_keeps_first_occurrence(self):
-        articles = [make_article("코스피 상승"), make_article("코스피 상승", source="매일경제")]
-        self.assertEqual(dedupe(articles)[0].source, "연합뉴스")
+        articles = [make_article("코스피 상승"), make_article("코스피 상승", source="한국경제")]
+        self.assertEqual(dedupe(articles)[0].source, "매일경제")
 
     def test_keeps_distinct(self):
         articles = [make_article("코스피 상승"), make_article("코스닥 하락")]
         self.assertEqual(len(dedupe(articles)), 2)
+
+
+class ApplyQuotaTest(unittest.TestCase):
+    FEEDS = {
+        "매일경제": FeedSpec("https://a", quota=2),
+        "WSJ": FeedSpec("https://b", language="en", quota=1),
+    }
+
+    def test_caps_per_source(self):
+        articles = [make_article(f"기사{i}") for i in range(5)]
+        self.assertEqual(len(apply_quota(articles, self.FEEDS)), 2)
+
+    def test_each_source_gets_its_own_quota(self):
+        articles = [make_article(f"국내{i}") for i in range(4)]
+        articles += [make_article(f"해외{i}", source="WSJ") for i in range(4)]
+        kept = apply_quota(articles, self.FEEDS)
+        self.assertEqual([a.source for a in kept], ["매일경제", "매일경제", "WSJ"])
+
+    def test_keeps_earliest_in_input_order(self):
+        """입력이 최신순이면 각 매체의 최신 기사가 남는다."""
+        articles = [make_article("최신", minutes_ago=0), make_article("오래된", minutes_ago=99)]
+        feeds = {"매일경제": FeedSpec("https://a", quota=1)}
+        self.assertEqual(apply_quota(articles, feeds)[0].title, "최신")
+
+    def test_unknown_source_dropped(self):
+        self.assertEqual(apply_quota([make_article("x", source="어디선가")], self.FEEDS), [])
 
 
 class FakeResponse:
@@ -190,8 +241,14 @@ class CollectArticlesTest(unittest.TestCase):
         mod.requests.Session = lambda: session
         self.addCleanup(setattr, mod.requests, "Session", self._real_session)
 
+    # cutoff 계산이 실제 현재 시각을 쓰므로 창을 넉넉히 준다.
+    FOREVER = 10**6
+
     def test_merges_and_sorts_newest_first(self):
-        feeds = {"연합뉴스": "https://a", "한국경제": "https://b"}
+        feeds = {
+            "매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER),
+            "한국경제": FeedSpec("https://b", max_age_hours=self.FOREVER),
+        }
         self._patch(
             FakeSession(
                 {
@@ -200,15 +257,17 @@ class CollectArticlesTest(unittest.TestCase):
                 }
             )
         )
-        # cutoff 계산이 실제 현재 시각을 쓰므로 max_age를 넉넉히 준다.
-        articles = collect_articles(max_age_hours=10**6, feeds=feeds)
+        articles = collect_articles(feeds=feeds)
         self.assertEqual([a.title for a in articles], ["최신", "오래된"])
 
     def test_failed_feed_recorded_not_raised(self):
-        feeds = {"연합뉴스": "https://a", "한국경제": "https://down"}
+        feeds = {
+            "매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER),
+            "한국경제": FeedSpec("https://down", max_age_hours=self.FOREVER),
+        }
         self._patch(FakeSession({"https://a": rss(item(title="살아있음", link="https://x"))}))
         errors: list[str] = []
-        articles = collect_articles(max_age_hours=10**6, feeds=feeds, errors=errors)
+        articles = collect_articles(feeds=feeds, errors=errors)
         self.assertEqual([a.title for a in articles], ["살아있음"])
         self.assertEqual(len(errors), 1)
         self.assertIn("한국경제", errors[0])
@@ -216,18 +275,53 @@ class CollectArticlesTest(unittest.TestCase):
     def test_failed_feed_raises_without_error_sink(self):
         self._patch(FakeSession({}))
         with self.assertRaises(CollectError):
-            collect_articles(feeds={"연합뉴스": "https://down"})
+            collect_articles(feeds={"매일경제": FeedSpec("https://down")})
 
     def test_respects_limit(self):
         items = [item(title=f"기사{i}", link=f"https://x/{i}") for i in range(5)]
         self._patch(FakeSession({"https://a": rss(*items)}))
-        articles = collect_articles(max_age_hours=10**6, limit=3, feeds={"연합뉴스": "https://a"})
-        self.assertEqual(len(articles), 3)
+        feeds = {"매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER, quota=5)}
+        self.assertEqual(len(collect_articles(limit=3, feeds=feeds)), 3)
+
+    def test_quota_applied_per_source(self):
+        items = [item(title=f"기사{i}", link=f"https://x/{i}") for i in range(5)]
+        self._patch(FakeSession({"https://a": rss(*items)}))
+        feeds = {"매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER, quota=2)}
+        self.assertEqual(len(collect_articles(feeds=feeds)), 2)
+
+    def test_boilerplate_filtered_out(self):
+        feed = rss(
+            item(title="[인사] 한국수출입은행", link="https://x/1"),
+            item(title="코스피 급등", link="https://x/2"),
+        )
+        self._patch(FakeSession({"https://a": feed}))
+        feeds = {"매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER)}
+        self.assertEqual([a.title for a in collect_articles(feeds=feeds)], ["코스피 급등"])
+
+    def test_language_tagged_from_spec(self):
+        self._patch(FakeSession({"https://b": rss(item(title="Stocks rise", link="https://y"))}))
+        feeds = {"WSJ": FeedSpec("https://b", language="en", max_age_hours=self.FOREVER)}
+        self.assertEqual(collect_articles(feeds=feeds)[0].language, "en")
+
+    def test_per_source_age_window(self):
+        """주간지는 창이 넓어 살아남고, 일간지는 같은 기사가 잘려나간다."""
+        from email.utils import format_datetime
+
+        from econ_insta.collector import now_kst
+
+        # 고정 날짜를 쓰면 시간이 지나며 테스트가 썩는다. 현재 시각 기준으로 만든다.
+        two_days_ago = format_datetime(now_kst() - timedelta(hours=48))
+        old = rss(item(title="주간 기사", link="https://z", pub=two_days_ago))
+        self._patch(FakeSession({"https://a": old, "https://b": old}))
+
+        weekly = {"The Economist": FeedSpec("https://a", max_age_hours=72)}
+        daily = {"매일경제": FeedSpec("https://b", max_age_hours=24)}
+        self.assertEqual(len(collect_articles(feeds=weekly)), 1)
+        self.assertEqual(len(collect_articles(feeds=daily)), 0)
 
     def test_drops_stale_articles(self):
         self._patch(FakeSession({"https://a": rss(item(pub="Mon, 01 Jan 2024 00:00:00 +0900"))}))
-        articles = collect_articles(max_age_hours=24, feeds={"연합뉴스": "https://a"})
-        self.assertEqual(articles, [])
+        self.assertEqual(collect_articles(feeds={"매일경제": FeedSpec("https://a")}), [])
 
 
 class QuoteFormatTest(unittest.TestCase):
