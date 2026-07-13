@@ -5,7 +5,8 @@
 문장을 그대로 옮기지 않는다. 수치는 summarizer와 같은 방식으로 기계 검증한다.
 
 CLI:
-    python -m econ_insta.blog_brief          # 요약 + 카드 렌더 (발행 안 함)
+    python -m econ_insta.blog_brief                            # 요약 + 카드 렌더 (발행 안 함)
+    python -m econ_insta.blog_brief --publish out/<날짜>-blog   # 렌더된 카드를 발행
 """
 
 from __future__ import annotations
@@ -15,10 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
+import requests
 
 from .blog import AUTHOR, BLOG_NAME, BlogPost, latest_market_post
 from .collector import Article, collect_articles
-from .config import _load_dotenv
+from .config import PROJECT_ROOT, _load_dotenv
 from .factcheck import has_digits, unsupported_amounts
 from .renderer import OUTPUT_ROOT, FontSet, RenderError, render_card, render_cover
 from .summarizer import (
@@ -293,10 +295,54 @@ def render_blog(briefing: BlogBriefing, out_dir: Path | None = None, fonts: Font
         path = target / f"{i:02d}.jpg"
         image.save(path, "JPEG", quality=92, optimize=True)
         paths.append(path)
+
+    (target / "caption.txt").write_text(build_caption(briefing), encoding="utf-8")
     return paths
 
 
+# 인스타는 image_url을 자기 서버에서 가져가므로 커밋·push 후에야 발행할 수 있다.
+RAW_BASE = "https://raw.githubusercontent.com/hakusancode/econ-insta/main"
+
+
+def publish_rendered(out_dir: Path) -> int:
+    """렌더·push가 끝난 카드 디렉터리를 캐러셀로 발행한다."""
+    from .ig_client import InstagramClient
+
+    out_dir = out_dir.resolve()
+    caption_path = out_dir / "caption.txt"
+    if not caption_path.exists():
+        print(f"caption.txt가 없습니다: {out_dir}")
+        return 1
+    caption = caption_path.read_text(encoding="utf-8")
+
+    images = sorted(out_dir.glob("[0-9][0-9].jpg"))
+    if not images:
+        print(f"카드 이미지(NN.jpg)가 없습니다: {out_dir}")
+        return 1
+
+    rel = out_dir.relative_to(PROJECT_ROOT.resolve()).as_posix()
+    urls = [f"{RAW_BASE}/{rel}/{path.name}" for path in images]
+
+    for url in urls:
+        response = requests.get(url, timeout=20, allow_redirects=False)
+        kind = response.headers.get("Content-Type", "")
+        if response.status_code != 200 or kind != "image/jpeg":
+            print(f"호스팅 확인 실패 ({response.status_code}, {kind}): {url}")
+            print("커밋·push가 끝났는지 확인하세요.")
+            return 1
+
+    result = InstagramClient().publish_images(urls, caption)
+    print(f"발행 완료: media_id={result.media_id}")
+    print(f"  {result.permalink}")
+    return 0
+
+
 def main() -> int:
+    import sys
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "--publish":
+        return publish_rendered(Path(sys.argv[2]))
+
     post = latest_market_post()
     print(f"블로그 글: {post.title} ({post.published:%Y-%m-%d}, 전문 {len(post.body)}자)")
 
