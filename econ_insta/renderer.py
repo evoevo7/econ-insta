@@ -171,11 +171,13 @@ def _rule(draw: ImageDraw.ImageDraw, y: int, color=(42, 48, 62)) -> None:
     draw.line([(MARGIN, y), (WIDTH - MARGIN, y)], fill=color, width=2)
 
 
-def render_cover(headline: str, when: datetime, fonts: FontSet) -> Image.Image:
+def render_cover(
+    headline: str, when: datetime, fonts: FontSet, kicker: str = "데일리 경제 브리핑"
+) -> Image.Image:
     image, draw = _canvas(BG_COVER)
     inner = WIDTH - MARGIN * 2
 
-    draw.text((MARGIN, MARGIN), "데일리 경제 브리핑", font=fonts.at(38, bold=True), fill=ACCENT)
+    draw.text((MARGIN, MARGIN), kicker, font=fonts.at(38, bold=True), fill=ACCENT)
     draw.text((MARGIN, MARGIN + 62), f"{when:%Y년 %m월 %d일}", font=fonts.at(32), fill=MUTED)
 
     title_font = fonts.at(84, bold=True)
