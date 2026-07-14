@@ -265,7 +265,7 @@ def build_caption(briefing: BlogBriefing) -> str:
         "",
         briefing.caption_hook,
         "",
-        f"📌 이 게시물은 「{BLOG_NAME}」({AUTHOR} 님) 블로그 글을 원작자 승인을 받아 요약한 것입니다.",
+        f"📌 「{BLOG_NAME}」({AUTHOR} 님) 블로그 글을 요약한 게시물입니다.",
         f"원문 👉 {briefing.post.link}",
     ]
     if briefing.related_cards:
