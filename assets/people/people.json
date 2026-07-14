@@ -94,5 +94,17 @@
     "credit": "The White House (Wikimedia Commons, Public domain)",
     "source": "https://commons.wikimedia.org/wiki/File:Lee_Jae-myung_(2025)_(cropped).jpg",
     "license": "Public domain"
+  },
+  "ueda": {
+    "name": "우에다 가즈오",
+    "aliases": [
+      "우에다",
+      "일본은행 총재",
+      "BOJ"
+    ],
+    "file": "ueda.jpg",
+    "credit": "Cabinet Public Relations Office of the Cabinet Secretariat (Wikimedia Commons, CC BY 4.0)",
+    "source": "https://commons.wikimedia.org/wiki/File:Kazuo_Ueda_on_October_2,_2024.jpg",
+    "license": "CC BY 4.0"
   }
 }

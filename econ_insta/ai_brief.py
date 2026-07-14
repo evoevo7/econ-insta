@@ -129,6 +129,9 @@ SYSTEM = f"""당신은 한국어 AI 카드뉴스의 에디터입니다.
 - headline은 표지 제목, {HEADLINE_MAX}자 이내.
 - cards는 {MIN_CARDS}~{MAX_CARDS}장. title {CARD_TITLE_MAX}자 이내, body {CARD_BODY_MAX}자 이내 2~3문장.
 - caption_hook은 캡션 첫머리 1~2문장. 숫자 없이 쓰십시오.
+  **카드에 실제로 담긴 내용만 요약하십시오.** 여러 카드를 억지로 한 단어로 묶지 마십시오 —
+  서로 다른 개념을 뭉개면 말이 되지 않는 문장이 됩니다 (예: 스포츠 '배당률'과 이익 '배분'을
+  '배당'으로 합치는 것). 카드에 없는 낱말을 쓰면 훅이 통째로 폐기됩니다.
 - bg_query: 표지 배경 사진을 찾을 영어 검색어 2~4단어. **사진으로 찍을 수 있는 구체적 대상**을
   쓰십시오 (예: "data center servers", "semiconductor wafer", "robot arm factory").
   "artificial intelligence" 같은 추상어는 엉뚱한 사진이 나옵니다."""
@@ -205,6 +208,62 @@ def _generate(client: anthropic.Anthropic, prompt: str) -> dict:
     return json.loads(text)
 
 
+# 훅에 흔히 쓰이는 일반어. 이 밖의 낱말은 카드에 근거가 있어야 한다.
+HOOK_STOPWORDS = frozenset(
+    """오늘 하루 요즘 최근 이번 소식 뉴스 브리핑 정리 정리했습니다 담았습니다 짚었습니다
+    세계 곳곳 국내 해외 업계 시장 흐름 이슈 움직임 경쟁 변화 전망 이야기 가지 개
+    그리고 그러나 한편 다시 함께 동시 각각 서로 모두 지금 앞으로 여기 저기
+    커지고 이어지고 나왔습니다 나섰습니다 왔습니다 있습니다 됩니다 합니다 입니다
+    무엇 어떤 왜 어디 얼마나 이런 저런 그런 바로 특히 대한 둘러싼 관련 위한 통해
+    인공지능 기술 기업 정부 규제 투자""".split()
+)
+
+_WORD_RE = re.compile(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9.\-]{1,}")
+
+# 조사. 붙은 채로 두면 '자본과'가 불용어 '자본'과도, 카드의 '자본'과도 안 맞는다.
+_JOSA_RE = re.compile(
+    r"(?:으로써|으로서|에서는|에게서|이라고|라고|까지|부터|에게|에서|으로|처럼|보다|마다|"
+    r"조차|밖에|이나|든지|이며|이고|와의|과의|의|은|는|이|가|을|를|와|과|에|로|도|만|나)$"
+)
+# 서술어 꼬리. 훅은 문장이라 동사·형용사가 섞인다 — 이런 건 근거를 따질 대상이 아니다.
+_PREDICATE_RE = re.compile(r"(?:습니다|입니다|했어요|있어요|어요|아요|네요|죠|다|임|함)$")
+
+
+def _stem(word: str) -> str:
+    return _JOSA_RE.sub("", word)
+
+
+def ungrounded_hook_words(hook: str, cards_text: str) -> list[str]:
+    """훅에서 카드에 근거가 없는 낱말을 찾는다.
+
+    **캡션 훅은 지금까지 아무 검증도 받지 않는 유일한 구멍이었다.** factcheck는 숫자만 본다.
+    실제 사고: NYT 카드의 '배당률'(월드컵 베팅 odds)과 연합뉴스 카드의 '초과이익 배분'을
+    모델이 **'배당의 줄다리기'** 한 마디로 뭉갰다. 완전히 다른 개념인데 말이 되지 않는 문장이
+    그대로 발행됐다.
+
+    조사가 붙는 한국어 특성상 완전 일치는 못 쓴다. 낱말의 앞 2글자가 카드 어딘가에 있으면
+    근거가 있다고 본다(느슨하지만 '배당' 같은 통짜 오류는 잡는다).
+    """
+    haystack = _clean_key(cards_text)
+    bad = []
+    for word in _WORD_RE.findall(hook):
+        stem = _stem(word)
+        if len(stem) < 2 or _PREDICATE_RE.search(stem):
+            continue
+        if any(stem.startswith(stop) for stop in HOOK_STOPWORDS):
+            continue
+        key = _clean_key(stem)
+        if len(key) >= 2 and key[:2] not in haystack:
+            bad.append(stem)
+    return bad
+
+
+def fallback_hook(cards: list[Card]) -> str:
+    """카드 제목만으로 만든 안전한 훅. 지어낼 여지가 없다."""
+    lead = cards[0].title.rstrip("…. ")
+    return f"{lead} 등 오늘의 AI 소식 {len(cards)}가지를 정리했습니다."
+
+
 def audit(payload: dict, source_text: str) -> dict[str, list[str]]:
     """근거 없는 수치를 찾는다. 경제 쪽 factcheck를 그대로 쓴다."""
     problems: dict[str, list[str]] = {}
@@ -248,13 +307,19 @@ def summarize_ai(articles: list[Article], client: anthropic.Anthropic | None = N
         raise SummarizeError(f"수치 검증 후 카드가 {len(cards)}장뿐입니다 (최소 {MIN_CARDS}장).")
 
     cards = cards[:MAX_CARDS]
-    # 태그의 근거는 후보 기사 전체가 아니라 **실제로 실린 카드**다.
+    # 태그와 훅의 근거는 후보 기사 전체가 아니라 **실제로 실린 카드**다.
     card_text = " ".join(f"{c.title} {c.body} {c.source}" for c in cards) + " " + payload["headline"]
+
+    hook = payload["caption_hook"]
+    ungrounded = ungrounded_hook_words(hook, card_text)
+    if ungrounded:
+        print(f"  ! 훅에 카드 근거가 없는 말: {ungrounded} → 안전한 훅으로 대체")
+        hook = fallback_hook(cards)
 
     return AIBriefing(
         headline=payload["headline"],
         cards=cards,
-        caption_hook=payload["caption_hook"],
+        caption_hook=hook,
         hashtags=filter_hashtags(payload["hashtags"], card_text)[:MAX_HASHTAGS],
         bg_query=payload["bg_query"].strip(),
         dropped_cards=dropped,

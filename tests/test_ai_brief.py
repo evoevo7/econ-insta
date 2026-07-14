@@ -7,7 +7,14 @@
 import unittest
 from datetime import datetime
 
-from econ_insta.ai_brief import AI_TOPIC, AIBriefing, build_caption, filter_hashtags
+from econ_insta.ai_brief import (
+    AI_TOPIC,
+    AIBriefing,
+    build_caption,
+    fallback_hook,
+    filter_hashtags,
+    ungrounded_hook_words,
+)
 from econ_insta.summarizer import Card
 
 
@@ -63,6 +70,37 @@ class HashtagTest(unittest.TestCase):
 
     def test_띄어쓰기가_달라도_기사에_있으면_남긴다(self):
         self.assertEqual(filter_hashtags(["앤스로픽"], SOURCE), ["앤스로픽"])
+
+
+class HookGroundingTest(unittest.TestCase):
+    """실제 사고: 스포츠 '배당률'과 이익 '배분'을 '배당의 줄다리기'로 뭉갠 훅이 발행됐다."""
+
+    CARDS = [
+        Card("오픈AI, 챗GPT에 칼시 월드컵 배당률 표시", "베팅 배당률을 보여준다.", "NYT"),
+        Card("AI 초과이익 배분 놓고 노사 이견", "초과이익을 어떻게 나눌지 이견이 있다.", "연합뉴스"),
+        Card("뉴욕주, 대형 데이터센터 신설 한시 금지", "데이터센터 신설을 금지한다.", "WSJ"),
+    ]
+
+    def _text(self):
+        return " ".join(f"{c.title} {c.body} {c.source}" for c in self.CARDS)
+
+    def test_실제_사고_문장을_잡는다(self):
+        bad = ungrounded_hook_words(
+            "세계 곳곳에서 AI를 둘러싼 자본과 전력, 배당의 줄다리기가 이어지고 있어요.", self._text()
+        )
+        self.assertIn("자본", bad)
+        self.assertIn("전력", bad)
+        self.assertIn("줄다리기", bad)
+
+    def test_카드에_근거한_훅은_통과한다(self):
+        hook = "데이터센터 규제와 초과이익 배분까지, 오늘의 AI 소식을 정리했습니다."
+        self.assertEqual(ungrounded_hook_words(hook, self._text()), [])
+
+    def test_안전한_훅은_카드_제목에서_만든다(self):
+        hook = fallback_hook(self.CARDS)
+        self.assertIn("오픈AI", hook)
+        self.assertIn("3가지", hook)
+        self.assertEqual(ungrounded_hook_words(hook, self._text()), [])
 
 
 class CaptionTest(unittest.TestCase):
