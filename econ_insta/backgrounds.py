@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -164,13 +165,30 @@ def fetch_unsplash(query: str, session: requests.Session | None = None) -> Backg
 # --- 위키미디어 공용 -------------------------------------------------------
 
 
+def _relevant(image: wikimedia.CommonsImage, query: str) -> bool:
+    """파일명이 검색어와 실제로 겹치는가.
+
+    공용 전문검색은 설명·카테고리까지 훑기 때문에 주제와 무관한 기록사진을 상위에 올린다.
+    "data center servers"로 검색했더니 **1990년대 방송 조정실 사진**이 1등으로 나와
+    AI 브리핑 표지에 깔릴 뻔했다. 연준 청사처럼 구체적 랜드마크는 잘 맞지만 추상적
+    주제에서는 엇나간다. 파일명에 검색어가 하나도 안 들어 있으면 믿지 않는다.
+    """
+    title = image.title.lower()
+    terms = [t for t in re.findall(r"[a-z]{4,}", query.lower())]
+    return any(term in title for term in terms) if terms else True
+
+
 def fetch_wikimedia(query: str, session: requests.Session | None = None) -> Background | None:
-    """공용에서 재사용 가능한 주제 사진을 받아온다. 결과가 없으면 None.
+    """공용에서 재사용 가능한 주제 사진을 받아온다. 결과가 없으면 None(단색 표지).
 
     라이선스 판정과 크레딧 문구는 wikimedia 모듈이 API 메타데이터로 만든다.
     """
     try:
-        results = wikimedia.search_images(query, session=session)
+        results = [
+            image
+            for image in wikimedia.search_images(query, session=session)
+            if _relevant(image, query)
+        ]
         if not results:
             return None
         best = results[0]

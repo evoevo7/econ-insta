@@ -141,20 +141,30 @@ def clean_text(raw: str) -> str:
 
 
 def parse_pubdate(raw: str) -> datetime:
-    """RSS pubDate를 KST tz-aware datetime으로 바꾼다.
+    """발행일시를 KST tz-aware datetime으로 바꾼다.
 
     매경의 '+09:00'처럼 콜론이 든 오프셋은 표준 파서가 타임존을 버리므로 먼저 정규화한다.
     타임존이 끝내 없으면 KST로 간주한다 (국내 매체 피드 전제).
+
+    RFC822만 받으면 안 된다: **AI타임스는 `2026-07-14 15:53:25`로 보낸다**(RFC822도 아니고
+    타임존도 없다). 이걸 못 읽어 50건을 통째로 버렸다. Atom(`<published>`)은 ISO8601이다.
     """
     raw = (raw or "").strip()
     if not raw:
-        raise CollectError("pubDate가 비어 있습니다.")
+        raise CollectError("발행일시가 비어 있습니다.")
 
     normalized = _TZ_COLON_RE.sub(r"\1\2", raw)
     try:
         parsed = parsedate_to_datetime(normalized)
-    except (TypeError, ValueError) as exc:
-        raise CollectError(f"pubDate를 해석할 수 없습니다: {raw!r}") from exc
+    except (TypeError, ValueError):
+        parsed = None
+
+    if parsed is None:
+        # ISO8601 (Atom) 또는 'YYYY-MM-DD HH:MM:SS' (AI타임스 등 국내 CMS)
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise CollectError(f"발행일시를 해석할 수 없습니다: {raw!r}") from exc
 
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=KST)
@@ -202,15 +212,41 @@ def _text(item: ET.Element, tag: str) -> str:
     return "" if element is None else "".join(element.itertext())
 
 
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _atom_entries(root: ET.Element) -> list[ET.Element]:
+    return root.findall(f".//{ATOM_NS}entry")
+
+
+def _atom_link(entry: ET.Element) -> str:
+    """Atom의 link는 텍스트가 아니라 href 속성이다. alternate를 우선한다."""
+    links = entry.findall(f"{ATOM_NS}link")
+    for link in links:
+        if link.get("rel", "alternate") == "alternate" and link.get("href"):
+            return link.get("href", "").strip()
+    return links[0].get("href", "").strip() if links else ""
+
+
 def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Article]:
-    """RSS 바이트를 Article 목록으로. 개별 item 오류와 정형 기사는 건너뛴다."""
+    """RSS/Atom 바이트를 Article 목록으로. 개별 항목 오류와 정형 기사는 건너뛴다.
+
+    **The Verge는 Atom(`<entry>`)이라 `<item>`만 찾으면 0건이 나온다.** 죽은 피드와
+    구분이 안 되므로 둘 다 읽는다.
+    """
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
         raise CollectError(f"{source}: XML 파싱 실패 ({exc})") from exc
 
+    items = root.findall(".//item")
+    entries = _atom_entries(root) if not items else []
+    total = len(items) + len(entries)
+
     articles: list[Article] = []
-    for item in root.findall(".//item"):
+    dropped_date = 0
+
+    for item in items:
         title = clean_text(_text(item, "title"))
         link = _text(item, "link").strip()
         if not title or not link or is_boilerplate(title):
@@ -218,6 +254,7 @@ def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Arti
         try:
             published = parse_pubdate(_text(item, "pubDate"))
         except CollectError:
+            dropped_date += 1
             continue
         articles.append(
             Article(
@@ -228,6 +265,36 @@ def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Arti
                 summary=clean_text(_text(item, "description"))[:300],
                 language=language,
             )
+        )
+
+    for entry in entries:
+        title = clean_text(_text(entry, f"{ATOM_NS}title"))
+        link = _atom_link(entry)
+        if not title or not link or is_boilerplate(title):
+            continue
+        raw_date = _text(entry, f"{ATOM_NS}published") or _text(entry, f"{ATOM_NS}updated")
+        try:
+            published = parse_pubdate(raw_date)
+        except CollectError:
+            dropped_date += 1
+            continue
+        summary = _text(entry, f"{ATOM_NS}summary") or _text(entry, f"{ATOM_NS}content")
+        articles.append(
+            Article(
+                source=source,
+                title=title,
+                link=link,
+                published=published,
+                summary=clean_text(summary)[:300],
+                language=language,
+            )
+        )
+
+    # 항목은 있는데 날짜 때문에 전부 버려졌다면 형식이 바뀐 것이다. 조용히 0건으로
+    # 넘어가면 '죽은 피드'로 오해한다 — 실제로 AI타임스에서 50건을 그렇게 잃었다.
+    if total and not articles and dropped_date == total:
+        raise CollectError(
+            f"{source}: {total}건을 모두 발행일시 해석 실패로 버렸습니다. 날짜 형식이 바뀐 듯합니다."
         )
     return articles
 
