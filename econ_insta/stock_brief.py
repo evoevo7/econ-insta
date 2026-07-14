@@ -28,6 +28,7 @@ from .config import PROJECT_ROOT
 from .renderer import (
     ACCENT,
     BG,
+    DEFAULT_THEME,
     DOWN,
     FG,
     FLAT,
@@ -39,6 +40,7 @@ from .renderer import (
     UP,
     WIDTH,
     FontSet,
+    Theme,
     _block_height,
     _canvas,
     _draw_block,
@@ -120,20 +122,26 @@ def _fmt_pct(value: float | None) -> str:
     return "—" if value is None else f"{value:+.2f}%"
 
 
-def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
+def render_chart(
+    series: Series,
+    fonts: FontSet,
+    when: datetime,
+    label: str = "주가 추이",
+    theme: Theme = DEFAULT_THEME,
+) -> Image.Image:
     """종가 추이 꺾은선 + 기간별 등락률.
 
     격자·눈금 없이 선과 최고/최저만 남긴다. 인스타는 작게 보이므로 눈금은 읽히지 않는다.
     """
-    image, draw = _canvas(BG)
+    image, draw = _canvas(theme.bg)
     inner = WIDTH - MARGIN * 2
 
-    draw.text((MARGIN, MARGIN), "주가 추이", font=fonts.at(58, bold=True), fill=FG)
+    draw.text((MARGIN, MARGIN), label, font=fonts.at(58, bold=True), fill=theme.fg)
     draw.text(
         (MARGIN, MARGIN + 78),
         f"{series.name} · {series.ticker} · 최근 3개월",
         font=fonts.at(30),
-        fill=MUTED,
+        fill=theme.muted,
     )
 
     day_change = series.change_pct(1)
@@ -141,14 +149,14 @@ def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
         (WIDTH - MARGIN, MARGIN + 4),
         f"{series.last:,.0f}{series.currency}",
         font=fonts.at(52, bold=True),
-        fill=FG,
+        fill=theme.fg,
         anchor="ra",
     )
     draw.text(
         (WIDTH - MARGIN, MARGIN + 74),
         _fmt_pct(day_change),
         font=fonts.at(34, bold=True),
-        fill=_change_color(day_change),
+        fill=theme.change_color(day_change or 0),
         anchor="ra",
     )
 
@@ -163,9 +171,9 @@ def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
 
     points = [point(i, v) for i, v in enumerate(closes)]
 
-    # 선 아래를 옅게 채워 방향이 한눈에 들어오게 한다.
-    trend = _change_color(series.change_pct(len(closes) - 1))
-    fill_color = tuple(int(c * 0.22 + BG[i] * 0.78) for i, c in enumerate(trend))
+    # 선 아래를 바탕색 쪽으로 옅게 채워 방향이 한눈에 들어오게 한다.
+    trend = theme.change_color(series.change_pct(len(closes) - 1) or 0)
+    fill_color = tuple(int(c * 0.22 + theme.bg[i] * 0.78) for i, c in enumerate(trend))
     draw.polygon(
         [(CHART_LEFT, CHART_BOTTOM)] + points + [(CHART_RIGHT, CHART_BOTTOM)],
         fill=fill_color,
@@ -175,7 +183,7 @@ def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
     # 최고·최저만 표시한다.
     hi_index = closes.index(high)
     lo_index = closes.index(low)
-    for index, value, label, anchor in (
+    for index, value, mark, anchor in (
         (hi_index, high, f"고 {high:,.0f}", "ls"),
         (lo_index, low, f"저 {low:,.0f}", "la"),
     ):
@@ -184,26 +192,26 @@ def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
         dy = -18 if anchor == "ls" else 22
         draw.text(
             (min(max(x, MARGIN + 40), WIDTH - MARGIN - 40), y + dy),
-            label,
+            mark,
             font=fonts.at(26),
-            fill=MUTED,
+            fill=theme.muted,
             anchor="ms" if anchor == "ls" else "ma",
         )
 
-    _rule(draw, RULE_Y)
+    _rule(draw, RULE_Y, theme.rule)
 
     # 기간별 등락률. 3개월은 오른 상태인데 1주는 급락 — 이 대비가 이 카드의 핵심이다.
     periods = [("1주", 5), ("1개월", 21), ("3개월", len(closes) - 1)]
     cell = inner // len(periods)
-    for i, (label, sessions) in enumerate(periods):
+    for i, (period_label, sessions) in enumerate(periods):
         change = series.change_pct(sessions)
         cx = MARGIN + cell * i + cell // 2
-        draw.text((cx, STATS_TOP), label, font=fonts.at(30), fill=MUTED, anchor="ma")
+        draw.text((cx, STATS_TOP), period_label, font=fonts.at(30), fill=theme.muted, anchor="ma")
         draw.text(
             (cx, STATS_TOP + 48),
             _fmt_pct(change),
             font=fonts.at(46, bold=True),
-            fill=_change_color(change),
+            fill=theme.change_color(change or 0),
             anchor="ma",
         )
 
@@ -212,7 +220,7 @@ def render_chart(series: Series, fonts: FontSet, when: datetime) -> Image.Image:
         (WIDTH - MARGIN, HEIGHT - MARGIN - 36),
         f"자료 · {basis} ({when:%Y.%m.%d})",
         font=fonts.at(28),
-        fill=MUTED,
+        fill=theme.muted,
         anchor="ra",
     )
     return image
