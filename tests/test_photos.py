@@ -2,10 +2,19 @@
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+
+from PIL import Image
 
 from econ_insta.collector import Article
 from econ_insta.issues import Issue
-from econ_insta.photos import Candidate, candidates
+from econ_insta.photos import (
+    MAX_CANDIDATES,
+    Candidate,
+    candidates,
+    is_placeholder,
+    usable,
+)
 
 KST = timezone(timedelta(hours=9))
 
@@ -95,6 +104,149 @@ class CandidatesTest(unittest.TestCase):
         issue = Issue(articles=[art("연합뉴스", [YNA_ORIGINAL])])
         with self.assertRaises(Exception):
             candidates(issue)[0].url = "바꿀 수 없다"
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (120, 30, 30)).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+class FakeResponse:
+    def __init__(self, content: bytes = b"", status_code: int = 200):
+        self.content = content
+        self.status_code = status_code
+        self.headers: dict[str, str] = {}
+
+
+class FakeSession:
+    """URL → 응답. 등록 안 된 URL은 404."""
+
+    def __init__(self, routes: dict[str, FakeResponse]):
+        self.routes = routes
+        self.asked: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.asked.append(url)
+        return self.routes.get(url, FakeResponse(status_code=404))
+
+
+def cand(url: str, freq: int = 1, sources=("연합뉴스",)) -> Candidate:
+    return Candidate(url=url, sources=frozenset(sources), freq=freq)
+
+
+class IsPlaceholderTest(unittest.TestCase):
+    def test_한경_로고는_플레이스홀더다(self):
+        """한경 og:image는 전부 이 로고다(실측). 안 거르면 표지에 한경 로고가 박힌다."""
+        self.assertTrue(
+            is_placeholder("https://static.hankyung.com/img/logo/logo-news-sns.png?v=20201130")
+        )
+
+    def test_매경_facebook_기본이미지는_플레이스홀더다(self):
+        self.assertTrue(is_placeholder("https://static.mk.co.kr/facebook_mknews.jpg"))
+
+    def test_실제_기사_사진은_플레이스홀더가_아니다(self):
+        self.assertFalse(is_placeholder(YNA_ORIGINAL))
+        self.assertFalse(is_placeholder(MK_RECEIVED))
+        self.assertFalse(is_placeholder("https://images.wsj.net/im-925351"))
+
+    def test_대소문자를_무시한다(self):
+        self.assertTrue(is_placeholder("https://STATIC.MK.CO.KR/FACEBOOK_mknews.jpg"))
+
+
+class UsableTest(unittest.TestCase):
+    def test_플레이스홀더는_다운로드도_안_한다(self):
+        session = FakeSession({})
+        result = usable([cand("https://static.mk.co.kr/facebook_mknews.jpg")], session=session)
+        self.assertEqual(result, [])
+        self.assertEqual(session.asked, [])
+
+    def test_짧은_변이_640_미만이면_버린다(self):
+        """1080×1350 표지라 그 미만은 확대하면 뭉갠다."""
+        url = "https://img.example.com/small.jpg"
+        session = FakeSession({url: FakeResponse(_jpeg(400, 300))})
+        self.assertEqual(usable([cand(url)], session=session), [])
+
+    def test_충분히_크면_남는다(self):
+        url = "https://img.example.com/big.jpg"
+        session = FakeSession({url: FakeResponse(_jpeg(1200, 800))})
+        result = usable([cand(url)], session=session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0].url, url)
+        self.assertEqual(result[0][1].size, (1200, 800))
+
+    def test_연합_P2는_P4를_먼저_시도한다(self):
+        """RSS는 _P2(작은 것), og:image는 같은 사진의 _P4(큰 것)를 준다(실측).
+        URL 문자열 치환으로 만든다 — 기사 페이지를 가져오는 게 아니다."""
+        p4 = YNA_ORIGINAL.replace("_P2.", "_P4.")
+        session = FakeSession({p4: FakeResponse(_jpeg(1600, 1000))})
+        result = usable([cand(YNA_ORIGINAL)], session=session)
+        self.assertEqual(session.asked[0], p4)
+        self.assertEqual(result[0][1].size, (1600, 1000))
+
+    def test_P4가_없으면_P2로_내려간다(self):
+        session = FakeSession({YNA_ORIGINAL: FakeResponse(_jpeg(900, 700))})
+        result = usable([cand(YNA_ORIGINAL)], session=session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1].size, (900, 700))
+
+    def test_다운로드_실패는_그_후보만_건너뛴다(self):
+        good = "https://img.example.com/good.jpg"
+        session = FakeSession({good: FakeResponse(_jpeg(1000, 1000))})
+        result = usable([cand("https://img.example.com/dead.jpg"), cand(good)], session=session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0].url, good)
+
+    def test_깨진_바이트는_그_후보만_건너뛴다(self):
+        url = "https://img.example.com/broken.jpg"
+        session = FakeSession({url: FakeResponse("이건 JPEG가 아니다".encode("utf-8"))})
+        self.assertEqual(usable([cand(url)], session=session), [])
+
+    def test_빈도가_높은_후보가_앞에_온다(self):
+        low = "https://img.example.com/low.jpg"
+        high = "https://img.example.com/high.jpg"
+        session = FakeSession(
+            {low: FakeResponse(_jpeg(1000, 1000)), high: FakeResponse(_jpeg(1000, 1000))}
+        )
+        result = usable([cand(low, freq=1), cand(high, freq=3)], session=session)
+        self.assertEqual([c.url for c, _ in result], [high, low])
+
+    def test_빈도가_같으면_큰_사진이_앞에_온다(self):
+        small = "https://img.example.com/s.jpg"
+        big = "https://img.example.com/b.jpg"
+        session = FakeSession(
+            {small: FakeResponse(_jpeg(700, 700)), big: FakeResponse(_jpeg(1600, 1600))}
+        )
+        result = usable([cand(small), cand(big)], session=session)
+        self.assertEqual([c.url for c, _ in result], [big, small])
+
+    def test_최대_6장까지만(self):
+        routes = {}
+        cands = []
+        for i in range(9):
+            url = f"https://img.example.com/{i}.jpg"
+            routes[url] = FakeResponse(_jpeg(1000, 1000))
+            cands.append(cand(url, freq=9 - i))
+        result = usable(cands, session=FakeSession(routes))
+        self.assertEqual(len(result), MAX_CANDIDATES)
+
+    def test_429는_물러섰다_다시_친다(self):
+        busy = FakeResponse(status_code=429)
+        busy.headers = {"Retry-After": "1"}
+        ok = FakeResponse(_jpeg(1000, 1000))
+
+        class Flaky:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, url, **kwargs):
+                self.calls += 1
+                return busy if self.calls == 1 else ok
+
+        waits: list[float] = []
+        result = usable([cand("https://img.example.com/busy.jpg")], session=Flaky(), sleep=waits.append)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(waits, [1.0])
 
 
 if __name__ == "__main__":
