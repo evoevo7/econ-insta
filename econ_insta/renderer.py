@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from .config import PROJECT_ROOT
 from .summarizer import Briefing, Card
@@ -261,6 +261,58 @@ class FontSet:
 
     def at(self, size: int, *, bold: bool = False, weight: str | None = None) -> ImageFont.FreeTypeFont:
         return ImageFont.truetype(str(self._path_for(weight=weight, bold=bold)), size)
+
+
+# ── 렌더 프리미티브 (순수 함수) ────────────────────────────────────────────
+
+def vertical_gradient(size: tuple[int, int], top: Color, bottom: Color) -> Image.Image:
+    """세로 그라디언트 RGB 캔버스."""
+    w, h = size
+    img = Image.new("RGB", (w, h), top)
+    px = img.load()
+    for y in range(h):
+        t = y / (h - 1) if h > 1 else 0
+        c = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        for x in range(w):
+            px[x, y] = c
+    return img
+
+
+def radial_glow(base: Image.Image, center: tuple[int, int], radius: int,
+                color: Color, alpha: int) -> Image.Image:
+    """중심에서 퍼지는 저알파 라디얼 글로우를 얹는다."""
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    d.ellipse(
+        [center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius],
+        fill=color + (alpha,),
+    )
+    layer = layer.filter(ImageFilter.GaussianBlur(max(1, radius // 2)))
+    return Image.alpha_composite(base.convert("RGBA"), layer).convert("RGB")
+
+
+def grid_overlay(base: Image.Image, *, color: Color = (255, 255, 255),
+                 step: int = 108, alpha: int = 10) -> Image.Image:
+    """옅은 격자 질감."""
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    w, h = base.size
+    for x in range(0, w, step):
+        d.line([(x, 0), (x, h)], fill=color + (alpha,), width=1)
+    for y in range(0, h, step):
+        d.line([(0, y), (w, y)], fill=color + (alpha,), width=1)
+    return Image.alpha_composite(base.convert("RGBA"), layer).convert("RGB")
+
+
+def premium_background(theme: Theme, size: tuple[int, int] = (WIDTH, HEIGHT), *,
+                       glow_at: tuple[int, int] | None = None) -> Image.Image:
+    """다크 프리미엄 배경: 그라디언트 + 좌하단 골드 글로우 + 옅은 그리드."""
+    top, bottom = theme.gradient
+    img = vertical_gradient(size, top, bottom)
+    if theme.accent_glow is not None:
+        at = glow_at or (size[0] // 6, int(size[1] * 0.78))
+        img = radial_glow(img, at, int(size[0] * 0.58), theme.accent_glow, 30)
+    return grid_overlay(img, step=108, alpha=10)
 
 
 def wrap(text: str, font, max_width: int) -> list[str]:
