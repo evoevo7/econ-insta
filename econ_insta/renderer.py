@@ -69,6 +69,10 @@ class Theme:
     rule: Color
     up: Color = UP
     down: Color = DOWN
+    bg_top: Color | None = None
+    bg_bottom: Color | None = None
+    accent_glow: Color | None = None
+    signature: Color | None = None
 
     @property
     def flat(self) -> Color:
@@ -80,6 +84,11 @@ class Theme:
         if change_pct < 0:
             return self.down
         return self.flat
+
+    @property
+    def gradient(self) -> tuple[Color, Color]:
+        """세로 그라디언트 (위, 아래). 단색 테마는 bg 로 채워 top==bottom."""
+        return (self.bg_top or self.bg, self.bg_bottom or self.bg)
 
 
 DARK_AMBER = Theme(
@@ -126,9 +135,24 @@ MONO = Theme(
     rule=(52, 52, 52),
 )
 
-THEMES = (DARK_AMBER, PAPER, MIDNIGHT, MONO)
+DARK_PREMIUM = Theme(
+    name="다크 프리미엄",
+    bg=(11, 14, 22),
+    bg_cover=(10, 12, 20),
+    fg=(245, 246, 250),
+    muted=(139, 147, 167),
+    accent=(242, 197, 78),
+    body=(206, 210, 222),
+    rule=(42, 48, 62),
+    bg_top=(11, 14, 22),      # #0B0E16
+    bg_bottom=(20, 16, 32),   # #141020
+    accent_glow=(242, 197, 78),
+    signature=(240, 78, 42),  # #F04E2A 버밀리언
+)
 
-DEFAULT_THEME = DARK_AMBER
+THEMES = (DARK_PREMIUM, DARK_AMBER, PAPER, MIDNIGHT, MONO)
+
+DEFAULT_THEME = DARK_PREMIUM
 
 JPEG_QUALITY = 92
 
