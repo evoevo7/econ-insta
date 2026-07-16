@@ -352,8 +352,15 @@ class PickTest(unittest.TestCase):
         self.assertIn("코스피 7000 붕괴", texts)
 
     def test_max_tokens에서_잘리면_None(self):
+        """stop_reason이 max_tokens면 JSON이 유효해도 None을 돌려준다."""
         issue, session = _issue_with(2)
-        client = FakeClient('{"pick": 0', stop_reason="max_tokens")
+        client = FakeClient('{"pick": 0, "reason": "ok"}', stop_reason="max_tokens")
+        self.assertIsNone(pick(issue, "제목", client=client, session=session))
+
+    def test_refusal에서_거부되면_None(self):
+        """stop_reason이 refusal이면 JSON이 유효해도 None을 돌려준다."""
+        issue, session = _issue_with(2)
+        client = FakeClient('{"pick": 0, "reason": "ok"}', stop_reason="refusal")
         self.assertIsNone(pick(issue, "제목", client=client, session=session))
 
 
