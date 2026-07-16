@@ -241,7 +241,11 @@ def _chosen_issue(payload: dict, issues: list[Issue]) -> Issue | None:
     게시물을 버리는 것이다. 없음·범위밖·타입이상을 전부 같은 저하 경로로 모은다.
     """
     index = payload.get("issue_index")
-    if not isinstance(index, int) or not 1 <= index <= len(issues):
+    # isinstance(index, int)이면 bool을 통과시킨다 — bool은 int의 서브클래스라
+    # isinstance(True, int)가 True이고, True == 1이라 issue_index=True가
+    # issues[0]을 돌려준다(이 함수가 막으려는 바로 그 폴백). type(index) is not int로
+    # bool과 int 서브클래스를 전부 배제한다.
+    if type(index) is not int or not 1 <= index <= len(issues):
         return None
     return issues[index - 1]
 

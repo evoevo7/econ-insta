@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from econ_insta.collector import KST, Article, DailyBrief, Quote
 from econ_insta.issues import rank_issues
-from econ_insta.summarizer import summarize, build_prompt, SCHEMA
+from econ_insta.summarizer import summarize, build_prompt, SCHEMA, SYSTEM
 
 
 def art(title, source, summary=""):
@@ -137,15 +137,41 @@ class IssueContractTest(unittest.TestCase):
                 self.assertEqual(len(briefing.cards), 3)
 
     def test_번호가_없거나_타입이_이상해도_발행된다(self):
-        for bad in ({**PAYLOAD}, {**PAYLOAD, "issue_index": "2"}, {**PAYLOAD, "issue_index": None}):
-            with self.subTest(issue_index=bad.get("issue_index", "(없음)")):
+        for bad in (
+            {**PAYLOAD},
+            {**PAYLOAD, "issue_index": "2"},
+            {**PAYLOAD, "issue_index": None},
+            {**PAYLOAD, "issue_index": True},
+        ):
+            label = bad.get("issue_index", "(없음)")
+            with self.subTest(issue_index=repr(label)):
                 briefing = summarize(sample_brief(), client=FakeClient(bad))
                 self.assertIsNone(briefing.issue)
                 self.assertEqual(len(briefing.cards), 3)
 
+    def test_issue_index가_True면_issues0으로_새지_않는다(self):
+        """bool은 int의 서브클래스라 isinstance(True, int)가 True다.
+
+        isinstance만 쓰면 1 <= True <= len(issues)가 1 <= 1 <= n으로 성립해
+        issues[0]을 반환한다 — _chosen_issue가 막으려는 바로 그 폴백이
+        타입 검사를 뚫고 되살아난다. type(index) is not int로 bool을 배제해야 한다.
+        """
+        briefing = summarize(sample_brief(), client=FakeClient({**PAYLOAD, "issue_index": True}))
+        self.assertIsNone(briefing.issue)
+        self.assertEqual(len(briefing.cards), 3)
+
     def test_스키마에_issue_index가_필수다(self):
         self.assertEqual(SCHEMA["properties"]["issue_index"]["type"], "integer")
         self.assertIn("issue_index", SCHEMA["required"])
+
+    def test_system이_issue_index를_채우라고_지시한다(self):
+        """모델이 issue_index를 채우게 만드는 유일한 장치는 SYSTEM 프롬프트 지시뿐이다.
+
+        스키마는 필드의 존재(타입)만 강제하고, 값을 제대로 채우라는 지시는
+        SYSTEM 프롬프트에만 있다. 문구 전체를 단언하면 깨지기 쉬우므로
+        issue_index가 언급되는지만 확인한다.
+        """
+        self.assertIn("issue_index", SYSTEM)
 
 
 if __name__ == "__main__":
