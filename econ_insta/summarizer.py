@@ -34,6 +34,10 @@ HEADLINE_MAX = 24
 CARD_TITLE_MAX = 30
 CARD_BODY_MAX = 160
 
+PROMPT_ISSUES = 10
+"""모델에 보일 이슈 수. collect()가 기사 전량을 싣게 되면서(스펙 §4.2) 자르는 지점이
+여기로 옮겨왔다. 상위 10개면 매체 2곳 이상짜리 진짜 이슈는 확실히 들어온다."""
+
 SYSTEM = f"""당신은 한국어 경제 카드뉴스의 에디터입니다.
 
 주어진 기사 목록과 시장지표로 오늘의 데일리 경제 브리핑을 만듭니다.
@@ -314,7 +318,7 @@ def summarize(
     """생성 → 수치 감사 → (위반 시) 1회 재생성 → 남은 위반 카드는 폐기."""
     _load_dotenv()
     caller = client or anthropic.Anthropic()
-    issues = rank_issues(brief.articles)
+    issues = rank_issues(brief.articles)[:PROMPT_ISSUES]
     prompt = build_prompt(brief, issues)
 
     payload, input_tokens, output_tokens = _generate(caller, model, prompt)

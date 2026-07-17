@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from econ_insta.collector import KST, Article, DailyBrief, Quote
 from econ_insta.issues import rank_issues
-from econ_insta.summarizer import summarize, build_prompt, SCHEMA, SYSTEM, SYSTEM
+from econ_insta.summarizer import summarize, build_prompt, SCHEMA, SYSTEM, SYSTEM, PROMPT_ISSUES
 
 
 def art(title, source, summary=""):
@@ -87,6 +87,31 @@ def sample_brief():
     return DailyBrief(articles=arts, quotes=quotes, collected_at=datetime(2026, 7, 16), errors=[])
 
 
+# 서로 핵심어가 겹치지 않는 12개 주제. rank_issues는 핵심어 2개 이상 겹칠 때만
+# 합치므로(min_shared=2) 이 목록은 이슈 12개로 갈라진다.
+_TOPICS = [
+    "삼성전자 어닝쇼크",
+    "한은 기준금리 동결",
+    "코스피 급락",
+    "원화 환율 상승",
+    "비트코인 반등",
+    "유가 배럴당 급등",
+    "미국 고용 지표",
+    "엔비디아 실적",
+    "부동산 거래량 감소",
+    "조선업 수주 확대",
+    "항공사 여객 증가",
+    "배터리 수출 부진",
+]
+
+
+def many_issue_brief():
+    """이슈 12개짜리 브리프. 프롬프트 상위 N개 자르기를 검증한다."""
+    arts = [art(title, "매일경제") for title in _TOPICS]
+    quotes = [Quote(symbol="^KS11", name="코스피", price=2981.4, change_pct=-2.14)]
+    return DailyBrief(articles=arts, quotes=quotes, collected_at=datetime(2026, 7, 16), errors=[])
+
+
 class SummarizeSingleIssueTest(unittest.TestCase):
     def test_returns_cards_with_roles(self):
         client = FakeClient(PAYLOAD)
@@ -120,6 +145,19 @@ class SummarizeSingleIssueTest(unittest.TestCase):
         prompt = build_prompt(brief, 금리만)
         self.assertIn("기준금리", prompt)
         self.assertNotIn("삼성전자", prompt)
+
+    def test_프롬프트에_상위_10개_이슈만_실린다(self):
+        """brief.articles가 전량(수백 건)이 됐으므로 프롬프트에서 잘라야 한다(스펙 §4.3)."""
+        brief = many_issue_brief()
+        self.assertEqual(len(rank_issues(brief.articles)), 12)   # 픽스처 방어
+
+        client = FakeClient(PAYLOAD)
+        summarize(brief, client=client)
+        prompt = client.messages.last_prompt
+
+        self.assertIn("[이슈 10]", prompt)
+        self.assertNotIn("[이슈 11]", prompt)
+        self.assertIn("[후보 이슈 10개", prompt)
 
 
 class IssueContractTest(unittest.TestCase):
@@ -161,6 +199,29 @@ class IssueContractTest(unittest.TestCase):
 
         block = 이슈블록(client.messages.last_prompt, 2)
         self.assertIn(briefing.issue.articles[0].title, block)
+
+    def test_슬라이스_범위밖_번호는_이슈없이_저하한다(self):
+        """이음매 테스트(위)로는 안 잡히는 뮤테이션을 직접 겨냥한다.
+
+        앞에서 자르는 슬라이스(`issues[:PROMPT_ISSUES]`)는 순서를 보존하므로
+        `issues_full[N-1] == issues_sliced[N-1]`이 1~PROMPT_ISSUES번에서는 그대로
+        성립한다 — 그래서 유효 번호로 확인하는 위의 이음매 테스트는 "슬라이스를
+        summarize() 밖(build_prompt 안)으로 옮기는" 뮤테이션을 못 잡는다
+        (sample_brief는 이슈 2개뿐이라 애초에 잘리지도 않는다).
+
+        진짜 깨지는 지점은 `_chosen_issue`의 범위 검사(`1 <= index <= len(issues)`)다.
+        슬라이스가 summarize() 안에 있으면 이 len(issues)가 잘린 PROMPT_ISSUES를 보므로
+        프롬프트에 없는 번호(PROMPT_ISSUES + 1)는 범위 밖으로 걸러져 None이 된다. 슬라이스가
+        build_prompt 안으로 옮겨지면 len(issues)가 전체(12)를 보게 되어, 모델이 프롬프트에서
+        본 적 없는 11번을 답해도 범위 검사를 통과해 issues[10]을 돌려준다 — `_chosen_issue`가
+        막으려는 바로 그 사고(모델이 본 적 없는 이슈가 Briefing.issue에 실림)가 재현된다.
+        """
+        brief = many_issue_brief()
+        self.assertGreater(len(rank_issues(brief.articles)), PROMPT_ISSUES)   # 픽스처 방어: 실제로 잘릴 만큼 많다
+
+        out_of_range = PROMPT_ISSUES + 1
+        briefing = summarize(brief, client=FakeClient({**PAYLOAD, "issue_index": out_of_range}))
+        self.assertIsNone(briefing.issue)
 
     def test_범위밖_번호면_이슈없이_발행된다(self):
         """카드는 살아서 나간다 — 배경 조달의 문제이지 콘텐츠의 문제가 아니다."""
