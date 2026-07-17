@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from econ_insta.collector import KST
@@ -125,3 +128,60 @@ class HostingReadyTest(unittest.TestCase):
         def get(url, **_kwargs):
             return self._response(200, ctype="text/plain")
         self.assertFalse(hosting_ready(["https://x/01.jpg"], attempts=2, sleep=lambda _s: None, get=get))
+
+    def test_본문이_잘리면_미전파로_보고_재시도한다(self):
+        """2026-07-17 실제 발행 사고 — CDN이 200 image/jpeg로 응답하면서 본문을 절반만 줬고,
+        메타가 그 잘린 바이트를 그대로 게시했다(지표 카드 하단 절반이 회색, media_id=18087340157553909).
+        상태·타입만 봐서는 못 잡는다 — 본문 해시가 로컬 원본과 일치해야 전파 완료다."""
+        full = b"\xff\xd8" + b"x" * 100 + b"\xff\xd9"
+        checksums = {"https://x/01.jpg": hashlib.sha256(full).hexdigest()}
+        calls = {"n": 0}
+        def get(url, **_kwargs):
+            calls["n"] += 1
+            body = full[: len(full) // 2] if calls["n"] == 1 else full
+            return SimpleNamespace(status_code=200, headers={"Content-Type": "image/jpeg"}, content=body)
+        slept: list[float] = []
+        self.assertTrue(hosting_ready(["https://x/01.jpg"], checksums=checksums,
+                                      sleep=slept.append, get=get))
+        self.assertEqual(len(slept), 1)   # 잘린 1회차 뒤 한 번 기다렸다
+
+    def test_본문이_끝내_다르면_False(self):
+        checksums = {"https://x/01.jpg": hashlib.sha256(b"full-image").hexdigest()}
+        def get(url, **_kwargs):
+            return SimpleNamespace(status_code=200, headers={"Content-Type": "image/jpeg"},
+                                   content=b"truncated")
+        self.assertFalse(hosting_ready(["https://x/01.jpg"], checksums=checksums,
+                                       attempts=2, sleep=lambda _s: None, get=get))
+
+
+class PublishEditionChecksumTest(unittest.TestCase):
+    """publish_edition이 로컬 파일 해시를 hosting_ready에 실제로 배선하는지.
+
+    hosting_ready에 검사가 있어도 호출부가 checksums를 안 넘기면 프로덕션은 그대로다 —
+    "가드가 있다 ≠ 가드가 작동한다"(진행 원장의 반복 사례)를 배선 테스트로 막는다.
+    """
+
+    def test_publish가_로컬_해시를_hosting_ready에_넘긴다(self):
+        import econ_insta.daily as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out" / f"{mod.now_kst():%Y-%m-%d}-kr"
+            out.mkdir(parents=True)
+            (out / "01.jpg").write_bytes(b"card-one")
+            (out / "caption.txt").write_text("캡션", encoding="utf-8")
+
+            seen: dict = {}
+            def fake_ready(urls, **kwargs):
+                seen["urls"] = list(urls)
+                seen.update(kwargs)
+                return False   # InstagramClient까지 가기 전에 멈춘다
+
+            self.addCleanup(setattr, mod, "PROJECT_ROOT", mod.PROJECT_ROOT)
+            self.addCleanup(setattr, mod, "hosting_ready", mod.hosting_ready)
+            mod.PROJECT_ROOT = root
+            mod.hosting_ready = fake_ready
+
+            self.assertEqual(mod.publish_edition(mod.EDITIONS["kr"]), 1)
+            expected = hashlib.sha256(b"card-one").hexdigest()
+            self.assertEqual(seen["checksums"][seen["urls"][0]], expected)

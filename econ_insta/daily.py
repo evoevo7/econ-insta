@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 import time
 from dataclasses import dataclass
@@ -83,13 +84,16 @@ def publish_with_retry(publish, *, attempts: int = PUBLISH_ATTEMPTS,
             sleep(delay)
 
 
-def hosting_ready(urls, *, attempts: int = PUBLISH_ATTEMPTS,
+def hosting_ready(urls, *, checksums: dict[str, str] | None = None,
+                  attempts: int = PUBLISH_ATTEMPTS,
                   delay: float = PUBLISH_DELAY_SECONDS,
                   sleep=time.sleep, get=requests.get) -> bool:
-    """raw CDN이 모든 이미지를 200 image/jpeg로 줄 때까지 기다린다.
+    """raw CDN이 모든 이미지를 온전한 바이트로 줄 때까지 기다린다.
 
     push 직후에는 CDN 전파가 안 끝나 404·엉뚱한 Content-Type이 온다(실측).
-    여기가 전파 지연이 가장 먼저 드러나는 관문이라 발행 호출과 같은 재시도가 필요하다(스펙 §3.2).
+    상태·타입이 멀쩡해도 본문이 잘려 올 수 있다 — 2026-07-17 첫 CI 발행에서 메타가
+    절반만 받은 지표 카드를 그대로 게시했다(하단 회색, media_id=18087340157553909).
+    checksums(url → 로컬 파일 SHA-256)를 주면 본문 일치까지 확인해야 전파 완료로 본다.
     """
     for attempt in range(1, attempts + 1):
         bad = None
@@ -97,6 +101,9 @@ def hosting_ready(urls, *, attempts: int = PUBLISH_ATTEMPTS,
             response = get(url, timeout=20, allow_redirects=False)
             if response.status_code != 200 or response.headers.get("Content-Type") != "image/jpeg":
                 bad = (url, response.status_code)
+                break
+            if checksums is not None and hashlib.sha256(response.content).hexdigest() != checksums[url]:
+                bad = (url, "본문 불일치")
                 break
         if bad is None:
             return True
@@ -142,7 +149,11 @@ def publish_edition(edition: Edition, *, sleep=time.sleep) -> int:
 
     rel = out.relative_to(PROJECT_ROOT).as_posix()
     urls = [f"{RAW_BASE}/{rel}/{path.name}" for path in images]
-    if not hosting_ready(urls, sleep=sleep):
+    checksums = {
+        url: hashlib.sha256(path.read_bytes()).hexdigest()
+        for url, path in zip(urls, images)
+    }
+    if not hosting_ready(urls, checksums=checksums, sleep=sleep):
         print("호스팅 확인 실패 — raw CDN이 끝내 전파되지 않았습니다.")
         return 1
 

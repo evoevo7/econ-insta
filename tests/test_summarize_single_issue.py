@@ -124,6 +124,34 @@ def big_issue_brief():
     return DailyBrief(articles=arts, quotes=quotes, collected_at=datetime(2026, 7, 16), errors=[])
 
 
+HANJA_PAYLOAD = {
+    "headline": "이란·美 충돌 격화",
+    "indicator_note": "위험 회피가 中 증시까지 번졌다",
+    "cards": [
+        {"title": "美 증시 급락", "body": "中 반발이 이어졌다.", "source": "연합뉴스", "role": "무슨 일"},
+        {"title": "왜", "body": "日 엔화가 급등했다.", "source": "매일경제", "role": "왜"},
+        {"title": "앞으로", "body": "시장은 다음 신호를 기다린다.", "source": "한국경제", "role": "앞으로"},
+    ],
+}
+
+
+class HanjaTest(unittest.TestCase):
+    """번들 Pretendard에는 한자 글리프가 없다 — 훅의 "美"가 tofu로 발행된 실제 사고
+    (2026-07-17, media_id=18087340157553909). 관용 국가 약칭은 한글로 풀어 내보낸다."""
+
+    def test_국가_약칭_한자가_한글로_풀린다(self):
+        briefing = summarize(sample_brief(), client=FakeClient(HANJA_PAYLOAD))
+        self.assertEqual(briefing.headline, "이란·미국 충돌 격화")
+        self.assertEqual(briefing.indicator_note, "위험 회피가 중국 증시까지 번졌다")
+        self.assertEqual(briefing.cards[0].title, "미국 증시 급락")
+        self.assertEqual(briefing.cards[0].body, "중국 반발이 이어졌다.")
+        self.assertEqual(briefing.cards[1].body, "일본 엔화가 급등했다.")
+
+    def test_system이_한자를_금지한다(self):
+        """치환표는 아는 한자만 안다 — 모르는 한자가 새는 것은 프롬프트가 1차로 막아야 한다."""
+        self.assertIn("한자", SYSTEM)
+
+
 class SummarizeSingleIssueTest(unittest.TestCase):
     def test_returns_cards_with_roles(self):
         client = FakeClient(PAYLOAD)

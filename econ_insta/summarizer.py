@@ -12,6 +12,7 @@ CLI:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import anthropic
@@ -68,6 +69,8 @@ SYSTEM = f"""당신은 한국어 경제 카드뉴스의 에디터입니다.
 - 기사의 제목이나 요약문을 그대로 옮기지 마십시오. 사실만 추출해 완전히 새로운 문장으로 다시 쓰십시오.
 - 각 카드에는 출처 매체명을 반드시 남기십시오.
 - 영문 기사는 자연스러운 한국어로 옮기되, 직역투를 피하십시오.
+- 한자를 쓰지 마십시오 — 카드 렌더 폰트에 한자 글리프가 없어 깨진 글자로 발행됩니다.
+  국가 약칭도 한글로 풀어 쓰십시오(美→미국, 中→중국, 日→일본).
 
 사실 정확성 (반드시 지킬 것):
 - has_body가 false인 기사는 제목만 제공된 것입니다. 제목이 명시한 사실만 쓰고,
@@ -130,6 +133,23 @@ SCHEMA = {
 
 class SummarizeError(RuntimeError):
     """요약 실패."""
+
+
+# 번들 Pretendard 5종에는 한자 글리프가 없다(fontTools cmap 실측) — 훅의 "美"가 tofu로
+# 발행된 실제 사고(2026-07-17, media_id=18087340157553909). 경제기사 관용 1자 국가 약칭만
+# 표에서 풀고, 그 밖의 한자는 SYSTEM의 금지 지시가 1차로 막는다. 문맥 의존적인
+# 한자(北=북한/북부 등)는 오역 위험이 있어 표에 넣지 않는다.
+HANJA_REPLACEMENTS = {
+    "美": "미국", "中": "중국", "日": "일본", "韓": "한국", "英": "영국",
+    "獨": "독일", "佛": "프랑스", "伊": "이탈리아", "印": "인도", "露": "러시아",
+    "亞": "아시아", "歐": "유럽",
+}
+_HANJA_RE = re.compile("|".join(HANJA_REPLACEMENTS))
+
+
+def replace_hanja(text: str) -> str:
+    """렌더 폰트가 모르는 관용 한자 약칭을 한글로 푼다."""
+    return _HANJA_RE.sub(lambda m: HANJA_REPLACEMENTS[m.group()], text)
 
 
 @dataclass(frozen=True)
@@ -351,7 +371,8 @@ def summarize(
 
     dropped = {int(key[5:]) for key in problems}
     cards = [
-        Card(title=c["title"], body=c["body"], source=c["source"], role=c.get("role"))
+        Card(title=replace_hanja(c["title"]), body=replace_hanja(c["body"]),
+             source=c["source"], role=c.get("role"))
         for i, c in enumerate(payload["cards"]) if i not in dropped
     ]
 
@@ -361,8 +382,8 @@ def summarize(
         )
 
     return Briefing(
-        headline=payload["headline"],
-        indicator_note=payload["indicator_note"],
+        headline=replace_hanja(payload["headline"]),
+        indicator_note=replace_hanja(payload["indicator_note"]),
         cards=cards,
         quotes=brief.quotes,
         issue=_chosen_issue(payload, issues),
