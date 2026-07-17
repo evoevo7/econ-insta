@@ -155,9 +155,15 @@ issue = _chosen_issue(payload, issues)                  # 같은 객체
 프롬프트의 `[이슈 N]` 번호와 `_chosen_issue`의 `issues[N-1]`이 어긋나 **모델이 본 적 없는 이슈가
 `Briefing.issue`에 실려 나간다.**
 
-이슈 계약 스펙 §7이 이 변경을 후속으로 예고했고, 최종 리뷰가 **정확히 이 위험을 예측해**
-이음매 테스트를 심어뒀다(`fab5cd5`, `test_프롬프트_번호와_chosen_issue_매핑이_일치한다`).
-그 테스트가 이 스펙의 구현자를 잡는 가드다. 지우거나 우회하지 말 것.
+**⚠ 정정 (2026-07-17 구현 중 반증됨)**: 이 스펙의 초판은 "기존 이음매 테스트(`fab5cd5`,
+`test_프롬프트_번호와_chosen_issue_매핑이_일치한다`)가 이 변경을 잡는다"고 썼으나 **틀렸다.**
+구현자가 뮤테이션을 실제 적용해 재현한 결과 그 테스트는 통과했다 — 픽스처(`sample_brief`, 이슈 2개)가
+`PROMPT_ISSUES=10`보다 작아 슬라이스가 아무것도 안 자르므로 뮤테이션이 발동조차 안 한다.
+앞에서 자르는 슬라이스는 순서를 보존해 `issues_full[N-1] == issues_sliced[N-1]`이 유효 번호 전체에
+성립하므로, **번호 매핑으로는 이 결함이 절대 안 드러난다.** 유일한 관측 경로는 `_chosen_issue`의
+범위 검사(`1 <= index <= len(issues)`)가 잘린 10이 아니라 전체를 기준으로 판정해 모델이 본 적 없는
+이슈를 반환하는 것이고, 실제 가드는 그것을 직접 겨냥하는
+`test_슬라이스_범위밖_번호는_이슈없이_저하한다`(이슈 12개 + `issue_index=11` → `None` 단언)다.
 
 ### 4.4 render_issue — 표시분만 자른다
 
@@ -182,7 +188,7 @@ for article in issue.articles[:PROMPT_ARTICLES]:
 |---|---|
 | `collect()`가 매체별 상한을 적용하지 않는다 | `gather_articles` 자리에 `collect_articles`를 되돌림 |
 | `collect_articles()`는 여전히 quota를 적용한다 | ai_brief 회귀 — quota를 전 파이프라인에서 지움 |
-| 슬라이스 뒤에도 프롬프트 번호 ↔ `_chosen_issue` 일치 | 기존 이음매 테스트(`fab5cd5`)가 이미 담당 |
+| 범위 밖 번호(`issue_index` > `PROMPT_ISSUES`)는 `None`으로 저하 | 슬라이스를 `build_prompt` 안으로 옮김 — §4.3 정정 참조, 기존 이음매 테스트는 이것을 못 잡는다 |
 | `build_prompt`가 상위 `PROMPT_ISSUES`개만 싣는다 | 슬라이스 누락 |
 | `render_issue`가 `PROMPT_ARTICLES`건만 나열한다 | 슬라이스 누락 |
 | `render_issue` 헤더는 전체 기사 수를 말한다 | `len(issue.articles[:5])`로 잘못 셈 |
