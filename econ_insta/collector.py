@@ -471,10 +471,15 @@ def collect_quotes(
     return quotes
 
 
-def collect(limit: int = 20) -> DailyBrief:
-    """기사와 지표를 함께 모은다. 한쪽이 실패해도 brief.errors에 남기고 진행한다."""
+def collect() -> DailyBrief:
+    """기사와 지표를 함께 모은다. 한쪽이 실패해도 brief.errors에 남기고 진행한다.
+
+    기사는 **전량**이다(수백 건). 매체별 쿼터를 적용하지 않는다 — 쿼터는 중요도를
+    못 보고 최신순으로 잘라 그날의 최대 뉴스를 버렸다(스펙 §1.1). 자르는 일은
+    summarize()가 rank_issues 뒤에서 한다.
+    """
     errors: list[str] = []
-    articles = collect_articles(limit=limit, errors=errors)
+    articles = gather_articles(errors=errors)
 
     try:
         quotes = collect_quotes(errors=errors)

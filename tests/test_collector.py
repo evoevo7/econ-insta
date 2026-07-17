@@ -352,6 +352,26 @@ class CollectArticlesTest(unittest.TestCase):
         feeds = {"매일경제": FeedSpec("https://a", quota=99)}
         self.assertEqual([a.title for a in gather_articles(feeds=feeds)], ["코스피 급등"])
 
+    def test_collect은_매체별_상한을_적용하지_않는다(self):
+        """데일리 파이프라인의 입구. 여기서 quota가 그날의 뉴스를 버리고 있었다(스펙 §1.1).
+
+        collect()는 feeds 인자가 없으므로 모듈 전역 FEEDS를 갈아끼운다.
+        지표는 yfinance로 네트워크를 타므로 함께 막는다.
+        """
+        import econ_insta.collector as mod
+
+        items = [item(title=f"기사{i}", link=f"https://x/{i}") for i in range(5)]
+        self._patch(FakeSession({"https://a": rss(*items)}))
+
+        self.addCleanup(setattr, mod, "FEEDS", mod.FEEDS)
+        mod.FEEDS = {"매일경제": FeedSpec("https://a", max_age_hours=self.FOREVER, quota=2)}
+
+        self.addCleanup(setattr, mod, "collect_quotes", mod.collect_quotes)
+        mod.collect_quotes = lambda errors=None: []
+
+        brief = mod.collect()
+        self.assertEqual(len(brief.articles), 5)
+
 
 class QuoteFormatTest(unittest.TestCase):
     def test_index_has_no_decimals(self):
