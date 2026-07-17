@@ -28,6 +28,13 @@ class KeywordsTest(unittest.TestCase):
     def test_single_char_dropped(self):
         self.assertNotIn("이", keywords("이 반도체"))
 
+    def test_스톱워드가_바이라인_토큰을_거른다(self):
+        """방어선: strip_byline이 새는 변형이 와도 2단어 문턱의 절반을 깎는다.
+
+        기자 이름(김준태)은 열거 불가라 남는 것이 맞다 — 그래서 주 수정은 collector다.
+        """
+        self.assertEqual(keywords("김준태 기자 연합뉴스 특파원 매일경제 한국경제"), {"김준태"})
+
 
 class RankIssuesTest(unittest.TestCase):
     def test_same_event_across_sources_clusters(self):

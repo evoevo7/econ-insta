@@ -155,6 +155,19 @@ def clean_text(raw: str) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+_BYLINE_RE = re.compile(r"^\([가-힣]+=[^)]+\)\s*[가-힣·\s]{2,30}?(기자|특파원)\s*=\s*")
+
+
+def strip_byline(text: str) -> str:
+    """연합뉴스식 바이라인 접두 '(서울=연합뉴스) 김준태 기자 = '를 벗긴다.
+
+    바이라인 토큰({기자, 연합뉴스, 서울, 기자이름})이 keywords()에 들어가면 같은 매체
+    기사끼리 주제 무관 병합된다(2026-07-17 실측: 연합 64건 메가클러스터). 지역·기자명은
+    가변이라 구조로 잡고, 문두 앵커(^)라 본문 중간 인용은 건드리지 않는다.
+    """
+    return _BYLINE_RE.sub("", text, count=1)
+
+
 def parse_pubdate(raw: str) -> datetime:
     """발행일시를 KST tz-aware datetime으로 바꾼다.
 
@@ -304,7 +317,7 @@ def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Arti
                 title=title,
                 link=link,
                 published=published,
-                summary=clean_text(_text(item, "description"))[:300],
+                summary=strip_byline(clean_text(_text(item, "description")))[:300],
                 language=language,
                 images=_images(item),
             )
@@ -328,7 +341,7 @@ def parse_feed(source: str, xml_bytes: bytes, language: str = "ko") -> list[Arti
                 title=title,
                 link=link,
                 published=published,
-                summary=clean_text(summary)[:300],
+                summary=strip_byline(clean_text(summary))[:300],
                 language=language,
                 images=_images(entry),
             )

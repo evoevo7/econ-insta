@@ -19,6 +19,7 @@ from econ_insta.collector import (
     is_boilerplate,
     parse_feed,
     parse_pubdate,
+    strip_byline,
 )
 
 
@@ -140,6 +141,40 @@ def make_article(title, source="매일경제", minutes_ago=0):
         link=f"https://example.com/{abs(hash(title))}",
         published=datetime(2026, 7, 10, 15, 0, tzinfo=KST) - timedelta(minutes=minutes_ago),
     )
+
+
+class StripBylineTest(unittest.TestCase):
+    def test_바이라인_접두가_벗겨진다(self):
+        self.assertEqual(
+            strip_byline("(서울=연합뉴스) 김준태 기자 = 오세훈 서울시장이 밝혔다."),
+            "오세훈 서울시장이 밝혔다.",
+        )
+        self.assertEqual(
+            strip_byline("(제주=연합뉴스) 조성흠 기자 = 최태원 회장은 말했다."),
+            "최태원 회장은 말했다.",
+        )
+
+    def test_특파원도_벗겨진다(self):
+        self.assertEqual(
+            strip_byline("(워싱턴=연합뉴스) 김태종 특파원 = 미 연준이 발표했다."),
+            "미 연준이 발표했다.",
+        )
+
+    def test_바이라인이_없으면_그대로(self):
+        for text in ("■ 트럼프 발언…美언론 반응", "코스피 6.3% 급락에 7000선 반납", ""):
+            self.assertEqual(strip_byline(text), text)
+
+    def test_본문_중간의_기자_패턴은_안_벗겨진다(self):
+        text = "발표 내용. (서울=연합뉴스) 김준태 기자 = 라는 서명이 붙었다."
+        self.assertEqual(strip_byline(text), text)
+
+    def test_parse_feed가_벗긴_뒤_300자를_자른다(self):
+        """순서 트랩: [:300]을 먼저 하면 바이라인이 예산을 먹어 300자가 안 나온다."""
+        body = "가" * 320
+        feed = rss(item(title="본문 긴 기사", link="https://x/1",
+                        desc=f"(서울=연합뉴스) 김준태 기자 = {body}"))
+        [article] = parse_feed("연합뉴스", feed)
+        self.assertEqual(article.summary, "가" * 300)
 
 
 class IsBoilerplateTest(unittest.TestCase):
