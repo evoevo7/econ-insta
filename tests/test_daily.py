@@ -7,7 +7,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from econ_insta.collector import KST
-from econ_insta.daily import EDITIONS, build_caption, output_dir, publish_with_retry
+from econ_insta.daily import EDITIONS, build_caption, hosting_ready, output_dir, publish_with_retry
 from econ_insta.ig_client import InstagramError
 
 
@@ -92,3 +92,36 @@ class PublishWithRetryTest(unittest.TestCase):
         with self.assertRaises(InstagramError):
             publish_with_retry(publish, attempts=3, sleep=slept.append)
         self.assertEqual(len(slept), 2)   # attempts-1번 대기
+
+
+class HostingReadyTest(unittest.TestCase):
+    """raw CDN 전파 대기 — URL 확인도 발행처럼 재시도해야 한다(스펙 §3.2).
+
+    push 직후엔 404가 정상이다. 첫 실패에 포기하면 cron이 거의 매번 첫 관문에서 죽는다.
+    """
+
+    @staticmethod
+    def _response(status, ctype="image/jpeg"):
+        return SimpleNamespace(status_code=status, headers={"Content-Type": ctype})
+
+    def test_전파가_늦어도_재시도_끝에_통과한다(self):
+        calls = {"n": 0}
+        def get(url, **_kwargs):
+            calls["n"] += 1
+            return self._response(404) if calls["n"] <= 2 else self._response(200)
+        slept: list[float] = []
+        self.assertTrue(hosting_ready(["https://x/01.jpg"], sleep=slept.append, get=get))
+        self.assertEqual(len(slept), 2)
+
+    def test_끝내_전파되지_않으면_False(self):
+        def get(url, **_kwargs):
+            return self._response(404)
+        slept: list[float] = []
+        self.assertFalse(hosting_ready(["https://x/01.jpg"], attempts=3, sleep=slept.append, get=get))
+        self.assertEqual(len(slept), 2)   # 마지막 시도 뒤엔 안 기다린다
+
+    def test_잘못된_ContentType도_미전파로_본다(self):
+        """raw는 전파 전 text/plain 404 페이지를 줄 수 있다 — 200이어도 jpeg가 아니면 아직이다."""
+        def get(url, **_kwargs):
+            return self._response(200, ctype="text/plain")
+        self.assertFalse(hosting_ready(["https://x/01.jpg"], attempts=2, sleep=lambda _s: None, get=get))

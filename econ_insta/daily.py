@@ -83,6 +83,29 @@ def publish_with_retry(publish, *, attempts: int = PUBLISH_ATTEMPTS,
             sleep(delay)
 
 
+def hosting_ready(urls, *, attempts: int = PUBLISH_ATTEMPTS,
+                  delay: float = PUBLISH_DELAY_SECONDS,
+                  sleep=time.sleep, get=requests.get) -> bool:
+    """raw CDN이 모든 이미지를 200 image/jpeg로 줄 때까지 기다린다.
+
+    push 직후에는 CDN 전파가 안 끝나 404·엉뚱한 Content-Type이 온다(실측).
+    여기가 전파 지연이 가장 먼저 드러나는 관문이라 발행 호출과 같은 재시도가 필요하다(스펙 §3.2).
+    """
+    for attempt in range(1, attempts + 1):
+        bad = None
+        for url in urls:
+            response = get(url, timeout=20, allow_redirects=False)
+            if response.status_code != 200 or response.headers.get("Content-Type") != "image/jpeg":
+                bad = (url, response.status_code)
+                break
+        if bad is None:
+            return True
+        print(f"호스팅 미전파 (시도 {attempt}/{attempts}, HTTP {bad[1]}): {bad[0]}")
+        if attempt < attempts:
+            sleep(delay)
+    return False
+
+
 def render_edition(edition: Edition) -> Path:
     brief = collect(feeds=edition.feeds)
     print(f"수집: 기사 {len(brief.articles)}건, 지표 {len(brief.quotes)}건")
@@ -119,11 +142,9 @@ def publish_edition(edition: Edition, *, sleep=time.sleep) -> int:
 
     rel = out.relative_to(PROJECT_ROOT).as_posix()
     urls = [f"{RAW_BASE}/{rel}/{path.name}" for path in images]
-    for url in urls:
-        response = requests.get(url, timeout=20, allow_redirects=False)
-        if response.status_code != 200 or response.headers.get("Content-Type") != "image/jpeg":
-            print(f"호스팅 확인 실패 ({response.status_code}): {url}")
-            return 1
+    if not hosting_ready(urls, sleep=sleep):
+        print("호스팅 확인 실패 — raw CDN이 끝내 전파되지 않았습니다.")
+        return 1
 
     result = publish_with_retry(
         lambda: InstagramClient().publish_images(
