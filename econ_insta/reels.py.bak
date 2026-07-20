@@ -58,7 +58,7 @@ FADE_SECONDS = 0.4
 # 릴스 탭 노출 조건. 벗어나면 그냥 피드 영상이 된다.
 REEL_MIN_SECONDS, REEL_MAX_SECONDS = 5, 90
 
-PAGES_BASE = "https://www.dealbook.kr"
+PAGES_BASE = "https://hakusancode.github.io/econ-insta"
 
 
 class ReelError(RuntimeError):

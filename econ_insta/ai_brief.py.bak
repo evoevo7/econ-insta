@@ -456,8 +456,8 @@ def load_briefing(out_dir: Path) -> AIBriefing:
     )
 
 
-#RAW_BASE = "https://raw.githubusercontent.com/hakusancode/econ-insta/main"
-RAW_BASE = "https://raw.githubusercontent.com/evoevo7/econ-insta/main"
+RAW_BASE = "https://raw.githubusercontent.com/hakusancode/econ-insta/main"
+
 
 def publish_rendered(out_dir: Path) -> int:
     from .ig_client import InstagramClient
