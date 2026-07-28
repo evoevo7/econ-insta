@@ -20,7 +20,9 @@ from .backgrounds import build_background
 from .collector import FeedSpec, GLOBAL_FEEDS, KR_FEEDS, collect, now_kst
 from .config import PROJECT_ROOT
 from .ig_client import InstagramClient, InstagramError
-from .summarizer import summarize
+from .issues import rank_issues
+from .naver import rerank as naver_rerank
+from .summarizer import PROMPT_ISSUES, summarize
 from . import renderer
 
 
@@ -119,7 +121,10 @@ def render_edition(edition: Edition) -> Path:
     for message in brief.errors:
         print(f"  ! {message}")
 
-    briefing = summarize(brief)
+    # 네이버 인기도(검색 트렌드 + 뉴스 커버리지)로 이슈 순서를 재정렬해 넘긴다.
+    # 키가 없거나 호출이 실패하면 rerank가 기존 크로스소스 랭킹을 그대로 돌려준다.
+    issues = naver_rerank(rank_issues(brief.articles)[:PROMPT_ISSUES])
+    briefing = summarize(brief, issues=issues)
     print(f"훅: {briefing.headline}")
 
     errors: list[str] = []
@@ -130,6 +135,11 @@ def render_edition(edition: Edition) -> Path:
     print(f"배경: {'사진' if bg else '그래픽 폴백'}")
 
     out = output_dir(edition, brief.collected_at)
+    # 재렌더 전에 이전 렌더의 카드 잔재를 지운다 — 카드 수가 줄면 옛 NN.jpg가 남아
+    # 같은 캐러셀에 옛 카드가 섞여 발행된다(2026-07-19 지표 카드 중복 실사고).
+    if out.exists():
+        for stale in out.glob("[0-9][0-9].jpg"):
+            stale.unlink()
     renderer.render(briefing, brief.collected_at, out_dir=out,
                     background=bg.image if bg else None)
     caption = build_caption(briefing.headline, briefing.cards, brief.collected_at,
